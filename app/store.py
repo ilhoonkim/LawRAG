@@ -66,7 +66,7 @@ class Store:
                 PRIMARY KEY(version,article,target,target_law));
               CREATE TABLE IF NOT EXISTS revision_catalog (
                 kind TEXT, mst TEXT, name TEXT, effective TEXT, promulgated TEXT,
-                PRIMARY KEY(kind,mst));
+                PRIMARY KEY(kind,mst,effective));
               CREATE TABLE IF NOT EXISTS law_versions (
                 version TEXT PRIMARY KEY, law_id TEXT, name TEXT, kind TEXT, mst TEXT,
                 promulgated TEXT, effective TEXT, collected_at TEXT, html TEXT, source_url TEXT);
@@ -83,6 +83,17 @@ class Store:
                 WHERE NOT EXISTS (SELECT 1 FROM version_articles v WHERE v.version=l.version);
 
             ''')
+            catalog_pk = [r['name'] for r in db.execute('PRAGMA table_info(revision_catalog)') if r['pk']]
+            if 'effective' not in catalog_pk:
+                db.executescript('''
+                    BEGIN IMMEDIATE;
+                    ALTER TABLE revision_catalog RENAME TO revision_catalog_legacy;
+                    CREATE TABLE revision_catalog (kind TEXT,mst TEXT,name TEXT,effective TEXT,promulgated TEXT,
+                        PRIMARY KEY(kind,mst,effective));
+                    INSERT INTO revision_catalog SELECT kind,mst,name,coalesce(effective,''),promulgated FROM revision_catalog_legacy;
+                    DROP TABLE revision_catalog_legacy;
+                    COMMIT;
+                ''')
             columns = {r[1] for r in db.execute('PRAGMA table_info(version_articles)')}
             if 'title_vector' not in columns:
                 db.execute('ALTER TABLE version_articles ADD COLUMN title_vector BLOB')

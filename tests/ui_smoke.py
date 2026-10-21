@@ -63,7 +63,7 @@ try:
      dialog.get_by_role('button',name='수집 시작',exact=True).click()
      expect(dialog.get_by_label('선박안전법 2020-01-01 수집',exact=True)).to_be_disabled(timeout=10000)
      dialog.get_by_role('navigation',name='수집할 버전 페이지').get_by_role('button',name='2',exact=True).click()
-     expect(dialog.get_by_text('3건 선택',exact=True)).to_be_visible()
+     expect(dialog.get_by_text('2건 선택',exact=True)).to_be_visible()
      dialog.get_by_label('조회된 미수집 버전 모두 선택').uncheck()
      dialog.get_by_label('선박안전법 2000-01-01 수집',exact=True).check()
      dialog.get_by_role('button',name='수집 시작',exact=True).click()

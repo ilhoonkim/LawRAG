@@ -26,7 +26,7 @@ class HistoryAPI:
         rows = [r for r in self.rows if query in r['name']]
         return {'laws':rows[(page-1)*display:page*display],'total':len(rows)}
 
-    def fetch(self,mst,kind='law'):
+    def fetch(self,mst,kind='law',effective=''):
         self.fetched.append(mst)
         row = next(r for r in self.rows if r['id']==mst)
         return RAW.replace('선박안전법'.encode(),row['name'].encode()).replace(b'20260101',row['effective'].encode())
@@ -62,23 +62,23 @@ def test_preload_collects_all_versions_and_aliases_and_retries_safely(tmp_path, 
     manager = Management(store,FakeProvider(),api)
     report = task.preload(manager,lambda _:None)
     assert not report['ok']  # absent directive must not be reported as success
-    assert report['items'][0]['found']==3
-    assert report['items'][0]['completed']==3
-    assert set(api.fetched)=={'101','102','103'}  # includes past AND future
+    assert report['items'][0]['found']==2
+    assert report['items'][0]['completed']==2
+    assert set(api.fetched)=={'101','102'}  # past/current only; future is not fetched
     assert report['items'][1]['errors']
     with store.connect() as db:
         assert db.execute('SELECT count(*) FROM version_articles WHERE vector IS NULL OR title_vector IS NULL').fetchone()[0]==0
-        assert db.execute('SELECT count(*) FROM law_versions').fetchone()[0]==3
+        assert db.execute('SELECT count(*) FROM law_versions').fetchone()[0]==2
         # Simulate a prior text-only collection: both embeddings must be repaired.
         db.execute("UPDATE version_articles SET title_vector=NULL WHERE version=(SELECT version FROM law_versions WHERE mst='102')")
     again = task.preload(manager,lambda _:None)
-    assert again['items'][0]['already_indexed']==2 and again['items'][0]['completed']==1
+    assert again['items'][0]['already_indexed']==1 and again['items'][0]['completed']==1
     assert api.fetched.count('102')==2
     assert json.loads((tmp_path/'preload-real-estate-report.json').read_text())['finished_at']
-    # After restart all three embeddings remain and are skipped without API body calls.
+    # After restart both embeddings remain and are skipped without API body calls.
     third = task.preload(Management(store,FakeProvider(),api),lambda _:None)
-    assert third['items'][0]['already_indexed']==3
-    assert len(api.fetched)==4
+    assert third['items'][0]['already_indexed']==2
+    assert len(api.fetched)==3
 
 
 def test_body_mismatch_fails_without_saving(tmp_path, small_catalog):
@@ -86,7 +86,7 @@ def test_body_mismatch_fails_without_saving(tmp_path, small_catalog):
     api.fetch = lambda *a, **kw: RAW
     manager = Management(Store(tmp_path),FakeProvider(),api)
     report = task.preload(manager,lambda _:None)
-    assert report['items'][0]['failed']==3
+    assert report['items'][0]['failed']==2
     assert all('본문 응답' in error['reason'] for error in report['items'][0]['errors'])
     with manager.store.connect() as db:
         assert db.execute('SELECT count(*) FROM law_versions').fetchone()[0]==0
@@ -115,7 +115,41 @@ def test_version_pagination_and_duplicate_ids(tmp_path, small_catalog):
     assert len(task.discover_versions(manager,small_catalog['items'][0]))==121
 
 
+def test_preload_only_latest_three_and_never_backfills_older_on_retry(tmp_path, small_catalog):
+    api = HistoryAPI()
+    api.rows = [dict(id=str(100+i),name='현행법',kind='law',effective=f'{2018+i}0101',promulgated=f'{2017+i}0101') for i in range(1,9)]
+    api.rows.append(dict(id='999',name='현행법',kind='law',effective='20990101',promulgated='20260101'))
+    manager = Management(Store(tmp_path),FakeProvider(),api)
+    items = small_catalog['items'][:1]
+    report = task.preload(manager,lambda _:None,items=items)
+    assert report['ok'] and report['version_limit'] == 3
+    assert report['items'][0]['discovered'] == 8
+    assert report['items'][0]['found'] == report['items'][0]['completed'] == 3
+    assert api.fetched == ['108','107','106']
+    repeat = task.preload(manager,lambda _:None,items=items)
+    assert repeat['items'][0]['already_indexed'] == 3
+    assert repeat['items'][0]['completed'] == 0
+    assert len(api.fetched) == 3
+    with manager.store.connect() as db:
+        assert db.execute('SELECT count(*) FROM law_versions').fetchone()[0] == 3
+
+
 def test_preload_main_refuses_to_claim_success_without_keys(monkeypatch,capsys):
     monkeypatch.setattr(task,'Settings',lambda:Settings(law_oc='',api_key=''))
-    assert task.main()==2
+    assert task.main([])==2
     assert '수집을 시작하지 않았습니다' in capsys.readouterr().out
+
+
+def test_list_only_checks_history_without_llm_key_or_queue_changes(tmp_path, small_catalog, monkeypatch, capsys):
+    api = HistoryAPI()
+    settings = Settings(data_dir=tmp_path,law_oc='test-oc',api_key='')
+    manager = Management(Store(tmp_path),FakeProvider(),api)
+    queued = manager.queue(task.CollectionInput(items=[{'mst':'102','name':'현행법','effective':'20260101'}]))
+    monkeypatch.setattr(task, 'Settings', lambda: settings)
+    monkeypatch.setattr(task, 'LawAPI', lambda oc: api)
+    assert task.main(['--law','현행법','--list-only']) == 0
+    assert '2개 시행 버전' in capsys.readouterr().out
+    assert not api.fetched
+    assert manager.history(1)['items'][0]['status'] == 'queued'
+    assert manager.history(1)['items'][0]['id'] == queued['ids'][0]
+    assert not (tmp_path / 'preload-real-estate-report.json').exists()

@@ -1,4 +1,5 @@
-"""One-off full-history intake. Run with the web server stopped; restart-safe via DB."""
+"""Intake the latest three eligible versions per law; restart-safe via DB."""
+import argparse
 import json
 from uuid import uuid4
 
@@ -8,6 +9,15 @@ from .laws import LawAPI, SetupError
 from .management import Management, CollectionInput, now
 from .provider import Provider
 from .store import Store
+from .temporal import today_in_korea
+
+RECENT_VERSION_LIMIT = 3
+
+
+def recent_versions(rows):
+    # discover_versions returns oldest first. Limit BEFORE skipping indexed rows,
+    # so repeated runs cannot gradually backfill older versions.
+    return rows[-RECENT_VERSION_LIMIT:][::-1]
 
 
 def discover_versions(manager, item):
@@ -20,15 +30,15 @@ def discover_versions(manager, item):
         for page in range(1, 201):
             result = manager.api.search(query, page, kind=item['kind'], revisions=True, display=100)
             rows = result['laws']
-            signature = tuple(row['id'] for row in rows)
+            signature = tuple((row['id'],row['effective']) for row in rows)
             if (not rows and (page-1)*100 < int(result['total'])) or (rows and signature in seen):
                 raise ValueError('API 연혁 페이지가 누락되거나 반복되었습니다.')
             seen.add(signature)
             for row in rows:
-                if normalize_name(row['name']) in accepted:
+                if normalize_name(row['name']) in accepted and manager.collectible_date(row['effective']):
                     if not row['id'].isdigit() or len(row['id']) > 20:
                         raise ValueError('버전 식별자가 없는 연혁이 반환되었습니다.')
-                    matches[row['id']] = {**row, 'kind': item['kind']}
+                    matches[(row['id'],row['effective'])] = {**row, 'kind': item['kind']}
             if page*100 >= int(result['total']):
                 break
         else:
@@ -44,7 +54,7 @@ def discover_versions(manager, item):
 
 def indexed(manager, row):
     with manager.store.connect() as db:
-        stored = db.execute('SELECT version FROM law_versions WHERE kind=? AND mst=?', (row['kind'],row['id'])).fetchone()
+        stored = db.execute('SELECT version FROM law_versions WHERE kind=? AND mst=? AND effective=?', (row['kind'],row['id'],row['effective'])).fetchone()
         if not stored:
             return False
         counts = db.execute('''SELECT count(*), sum(CASE WHEN vector IS NULL OR title_vector IS NULL
@@ -59,15 +69,20 @@ def record_discovery_failure(manager, item, reason):
             (uuid4().hex,uuid4().hex,'',item['kind'],item['name'],'','', 'failed',now(),now(),now(),reason,'',False))
 
 
-def preload(manager, report_progress=print):
+def preload(manager, report_progress=print, *, items=None):
     manager.require_collection_keys()
-    report = {'started_at':now(),'targets':len(CATALOG['items']),'items':[]}
-    for number, item in enumerate(CATALOG['items'], 1):
-        entry = {'name':item['name'],'kind':item['kind'],'found':0,'completed':0,'already_indexed':0,'failed':0,'pending':0,'errors':[]}
+    items = CATALOG['items'] if items is None else items
+    report = {'started_at':now(),'targets':len(items),'version_limit':RECENT_VERSION_LIMIT,'items':[]}
+    for number, item in enumerate(items, 1):
+        entry = {'name':item['name'],'kind':item['kind'],'discovered':0,'found':0,'completed':0,'already_indexed':0,'failed':0,'pending':0,'errors':[]}
         report_progress(f'[{number}/{report["targets"]}] {item["name"]}: 전체 버전 조회')
         try:
-            rows = discover_versions(manager, item)
+            discovered = discover_versions(manager, item)
+            entry['discovered'] = len(discovered)
+            rows = recent_versions(discovered)
             entry['found'] = len(rows)
+            report_progress(f'  전체 연혁 {len(discovered)}개 / 최근 수집 대상 {len(rows)}개'
+                            f' (시행 {rows[-1]["effective"]} ~ {rows[0]["effective"]}, 예정 제외)')
             missing = []
             for row in rows:
                 if indexed(manager, row):
@@ -83,12 +98,13 @@ def preload(manager, report_progress=print):
                 manager.run(queued['ids'])
                 with manager.store.connect() as db:
                     for event_id in queued['ids']:
-                        event = db.execute('SELECT mst,status,reason FROM collection_history WHERE id=?',(event_id,)).fetchone()
+                        event = db.execute('SELECT mst,effective,status,reason FROM collection_history WHERE id=?',(event_id,)).fetchone()
                         if event['status'] == 'completed':
                             entry['completed'] += 1
                         else:
                             entry['failed'] += 1
-                            entry['errors'].append({'mst':event['mst'],'reason':event['reason']})
+                            entry['errors'].append({'mst':event['mst'],'effective':event['effective'],'reason':event['reason']})
+                            report_progress(f'  실패 MST {event["mst"]} / 시행 {event["effective"]}: {event["reason"]}')
                 report_progress(f'  {entry["found"]}개 중 완료 {entry["completed"]}, 기존 임베딩 {entry["already_indexed"]}, 실패 {entry["failed"]}')
         except Exception as exc:
             reason = str(exc)[:300] if isinstance(exc,(SetupError,ValueError)) else '조회 또는 저장 처리 실패. 서버 설정과 저장 공간을 확인하세요.'
@@ -104,14 +120,43 @@ def preload(manager, report_progress=print):
     return report
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='법령별 오늘까지 시행된 최근 3개 버전 수집·임베딩')
+    parser.add_argument('--law', help='지정 목록의 법령 하나만 처리 (예: 소득세법)')
+    parser.add_argument('--list-only', action='store_true', help='연혁 건수·시행일만 확인, 본문 수집·임베딩 없음')
+    args = parser.parse_args(argv)
+    items = CATALOG['items']
+    if args.law:
+        items = [item for item in items if normalize_name(args.law) in
+                 {normalize_name(name) for name in [item['name'], *item.get('aliases', [])]}]
+        if not items:
+            parser.error('지정 목록에 없는 법령명입니다.')
     settings = Settings()
-    missing = [key for key,value in [('LAW_API_OC',settings.law_oc),('LLM_API_KEY',settings.api_key)] if not value]
+    required = [('LAW_API_OC', settings.law_oc)]
+    if not args.list_only:
+        required.append(('LLM_API_KEY', settings.api_key))
+    missing = [key for key, value in required if not value]
     if missing:
         print('수집을 시작하지 않았습니다. 프로젝트 .env에 필요한 설정: ' + ', '.join(missing))
         return 2
-    manager = Management(Store(settings.data_dir), Provider(settings), LawAPI(settings.law_oc))
-    report = preload(manager)
+    manager = Management(Store(settings.data_dir), Provider(settings), LawAPI(settings.law_oc), recover_pending=not args.list_only)
+    print(f'한국 날짜 {today_in_korea().isoformat()} 기준: 법령별 최근 {RECENT_VERSION_LIMIT}개, 시행 예정 제외')
+    if args.list_only:
+        failed = False
+        for item in items:
+            try:
+                discovered = discover_versions(manager, item)
+                rows = recent_versions(discovered)
+                print(f'{item["name"]}: 전체 연혁 {len(discovered)}개 / 수집 대상 {len(rows)}개 시행 버전'
+                      f' / 시행일 {rows[-1]["effective"]} ~ {rows[0]["effective"]}')
+                for row in rows:
+                    print(f'  MST {row["id"]} / 시행 {row["effective"]} / {row["name"]}')
+            except (SetupError, ValueError) as exc:
+                failed = True
+                print(f'{item["name"]}: 조회 실패: {exc}')
+        print('조회만 완료했습니다. 본문 수집·임베딩은 실행하지 않았습니다.')
+        return 1 if failed else 0
+    report = preload(manager, items=items)
     print('전체 수집·임베딩 완료' if report['ok'] else '일부 작업이 완료되지 않았습니다. 수집 이력과 결과 파일을 확인하세요.')
     print('결과 파일:',settings.data_dir / 'preload-real-estate-report.json')
     return 0 if report['ok'] else 1

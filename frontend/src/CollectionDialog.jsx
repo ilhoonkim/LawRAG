@@ -73,7 +73,7 @@ export default function CollectionDialog({ initialQuery, initialKind, onClose, o
       <div className="collection-candidates">{candidates.names.map(name=><button key={name} disabled={loading||submitting} onClick={()=>findVersions(name)}>{name} · 버전 조회</button>)}</div>
       <Pagination page={candidates.page} total={candidates.total} onChange={p=>findNames(p)} label="법령 검색 페이지" disabled={loading||submitting}/>
       <div className="collection-version-heading"><h3>{selectedName?`${selectedName} 개정 버전`:'개정 버전'}</h3><span className="table-total">개정 버전 {versions.total}건</span></div>
-      <p className="collection-explanation">현재 페이지의 미수집 버전만 자동 체크됩니다. 페이지를 바꾸면 선택이 초기화됩니다. 필요한 대상만 선택하세요.</p>
+      <p className="collection-explanation">오늘까지 시행된 연혁을 조회합니다. 시행 예정은 제외하며, 현재 페이지의 미수집 버전만 자동 체크됩니다. 페이지를 바꾸면 선택이 초기화됩니다. 필요한 대상만 선택하세요.</p>
       <div className="table-scroll"><table className="law-table"><thead><tr><th><input ref={allRef} type="checkbox" aria-label="조회된 미수집 버전 모두 선택" checked={all} disabled={!eligible.length||submitting} onChange={e=>setSelected(new Set(e.target.checked?eligible.map(rowKey):[]))}/></th><th>법령명</th><th>공포·발령일자</th><th>시행일자</th><th>수집 상태</th></tr></thead><tbody>
         {versions.items.map(row=><tr key={rowKey(row)}><td><input type="checkbox" aria-label={`${row.name} ${dateText(row.effective)} 수집`} disabled={!selectable(row)||submitting} checked={selected.has(rowKey(row))} onChange={e=>toggle(row,e.target.checked)}/></td><td>{row.name}</td><td>{dateText(row.promulgated)}</td><td>{dateText(row.effective)}</td><td><Badge status={row.version?'completed':row.collection_status}/></td></tr>)}
         {!versions.items.length&&<EmptyRow columns={5}>{loading?'조회 중입니다…':selectedName?'조회된 개정 버전이 없습니다.':'법령명을 검색하고 버전을 조회하세요.'}</EmptyRow>}

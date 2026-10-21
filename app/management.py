@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 from .laws import SetupError, parse_law, parse_admrul
+from .temporal import today_in_korea
 from .catalog import register_catalog, normalize_name
 
 Kind = Literal['law', 'admrul']
@@ -36,7 +37,7 @@ class CollectionInput(BaseModel):
 
 
 class Management:
-    def __init__(self, store, provider, api):
+    def __init__(self, store, provider, api, *, recover_pending=True):
         self.store, self.provider, self.api = store, provider, api
         self.worker_lock = threading.Lock()
         with store.connect() as db:
@@ -53,7 +54,8 @@ class Management:
             for row in db.execute('SELECT DISTINCT name,kind FROM law_versions').fetchall():
                 if not db.execute('SELECT 1 FROM categories WHERE kind=? AND compact_name(name)=?', (row['kind'],normalize_name(row['name']))).fetchone():
                     db.execute('INSERT OR IGNORE INTO categories(name,kind) VALUES(?,?)', (row['name'],row['kind']))
-            db.execute("UPDATE collection_history SET status='interrupted', reason='서버가 종료되어 수집이 중단되었습니다. 다시 수집해 주세요.', finished_at=? WHERE status IN ('queued','running')", (now(),))
+            if recover_pending:
+                db.execute("UPDATE collection_history SET status='interrupted', reason='서버가 종료되어 수집이 중단되었습니다. 다시 수집해 주세요.', finished_at=? WHERE status IN ('queued','running')", (now(),))
 
     def categories(self):
         with self.store.connect() as db:
@@ -71,8 +73,8 @@ class Management:
         item = dict(item)
         with self.store.connect() as db:
             version = db.execute('''SELECT v.*, EXISTS(SELECT 1 FROM laws l WHERE l.version=v.version) active
-                FROM law_versions v WHERE kind=? AND mst=? ORDER BY collected_at DESC LIMIT 1''', (item['kind'], item['id'])).fetchone()
-            event = db.execute('SELECT status,reason FROM collection_history WHERE kind=? AND mst=? ORDER BY requested_at DESC LIMIT 1', (item['kind'], item['id'])).fetchone()
+                FROM law_versions v WHERE kind=? AND mst=? AND (?='' OR effective=?) ORDER BY collected_at DESC LIMIT 1''', (item['kind'], item['id'],item.get('effective',''),item.get('effective',''))).fetchone()
+            event = db.execute("SELECT status,reason FROM collection_history WHERE kind=? AND mst=? AND (?='' OR effective=?) ORDER BY requested_at DESC LIMIT 1", (item['kind'], item['id'],item.get('effective',''),item.get('effective',''))).fetchone()
         active_versions = {r['version'] for r in self.store.temporal_versions()['versions']}
         item.update(version=version['version'] if version else None,
                     collected_at=version['collected_at'] if version else '',
@@ -89,13 +91,13 @@ class Management:
             for remote_page in range(1, 201):
                 result = self.api.search(query, remote_page, kind=kind, revisions=True, display=100)
                 items = result['laws']
-                signature = tuple(r['id'] for r in items)
+                signature = tuple((r['id'],r['effective']) for r in items)
                 if (not items and (remote_page-1)*100 < int(result['total'])) or (items and signature in seen):
                     raise ValueError('API 연혁 목록의 페이지가 누락되거나 반복되었습니다.')
                 seen.add(signature)
                 for row in items:
-                    if normalize_name(row['name']) == normalize_name(query):
-                        rows[row['id']] = row
+                    if normalize_name(row['name']) == normalize_name(query) and self.collectible_date(row['effective']):
+                        rows[(row['id'],row['effective'])] = row
                 if remote_page*100 >= int(result['total']):
                     break
             else:
@@ -122,6 +124,12 @@ class Management:
             item['active'] = item['version'] in active_versions
         return {'total': total, 'page': page, 'items': items}
 
+    def collectible_date(self, effective):
+        if not effective or len(effective) != 8 or not effective.isdigit():
+            return False
+        value = self.store._date(effective)
+        return value is not None and value <= today_in_korea()
+
     def require_collection_keys(self):
         if hasattr(self.api, 'oc') and not self.api.oc:
             raise SetupError('.env의 LAW_API_OC를 입력하고 서버를 재시작하세요.')
@@ -136,8 +144,10 @@ class Management:
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             for item in request.items:
-                duplicate = db.execute("SELECT 1 FROM collection_history WHERE kind=? AND mst=? AND status IN ('queued','running')", (item.kind, item.mst)).fetchone()
-                collected = db.execute('SELECT 1 FROM law_versions WHERE kind=? AND mst=?', (item.kind, item.mst)).fetchone()
+                if item.effective and not self.collectible_date(item.effective):
+                    raise ValueError('오늘 이후 시행 예정이거나 시행일이 잘못된 버전은 수집할 수 없습니다.')
+                duplicate = db.execute("SELECT 1 FROM collection_history WHERE kind=? AND mst=? AND effective=? AND status IN ('queued','running')", (item.kind, item.mst,item.effective)).fetchone()
+                collected = db.execute("SELECT 1 FROM law_versions WHERE kind=? AND mst=? AND (?='' OR effective=?)", (item.kind, item.mst,item.effective,item.effective)).fetchone()
                 if duplicate or (collected and not reindex):
                     continue
                 event_id = uuid4().hex
@@ -155,10 +165,12 @@ class Management:
                     event = dict(db.execute('SELECT * FROM collection_history WHERE id=?', (event_id,)).fetchone())
                     db.execute("UPDATE collection_history SET status='running',started_at=? WHERE id=?", (now(), event_id))
                 try:
-                    raw = self.api.fetch(event['mst'], kind=event['kind'])
+                    raw = self.api.fetch(event['mst'], kind=event['kind'], effective=event['effective'])
                     law = parse_admrul(raw) if event['kind'] == 'admrul' else parse_law(raw)
+                    if not self.collectible_date(law.effective):
+                        raise ValueError('오늘 이후 시행 예정이거나 시행일이 잘못된 본문은 저장하지 않았습니다.')
                     if normalize_name(law.name) != normalize_name(event['name']) or (event['effective'] and law.effective != event['effective']):
-                        raise ValueError('본문 응답의 법령명 또는 시행일이 선택한 버전과 다릅니다.')
+                        raise ValueError(f'본문 응답 불일치: 요청 {event["name"]} / 시행 {event["effective"]}, 응답 {law.name} / 시행 {law.effective}.')
                     result = self.store.ingest(raw, self.provider, bool(event['keyword_only']),
                                               mst=event['mst'], kind=event['kind'], archive_only=True)
                     with self.store.connect() as db:

@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 from time import monotonic
 import threading
+from .temporal import today_in_korea
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from .references import Annex, parse_annexes, article_links, reference_target
@@ -181,8 +182,8 @@ class LawAPI:
     def search(self, query, page=1, kind='law', revisions=False, display=30):
         if not revisions:
             return self._search_page(query, page, kind, display)
-        # nw=3 alone is not the complete amendment history. Merge historical,
-        # current and scheduled scopes, deduplicating by the API version ID.
+        # law is the promulgation-based search; eflaw provides effective-date
+        # versions. nw=1,3 selects historical/current, excluding scheduled.
         key = (query, kind)
         with self._revision_lock:
             cached = self._revision_cache.get(key)
@@ -190,23 +191,25 @@ class LawAPI:
                 rows = cached[1]
             else:
                 merged = {}
-                for scope in ((1, 2, 3) if kind == 'law' else (1, 2)):
+                for scope in (("1,3",) if kind == 'law' else (1, 2)):
                     seen = set()
                     for current_page in range(1, 201):
                         result = self._search_page(query, current_page, kind, 100, scope)
                         items = result['laws']
                         total = int(result['total'])
-                        signature = tuple(r['id'] for r in items)
+                        signature = tuple((r['id'],r['effective']) for r in items)
                         if (not items and (current_page - 1) * 100 < total) or (items and signature in seen):
                             raise ValueError('API 연혁 페이지가 누락되거나 반복되어 전체 버전을 확인하지 못했습니다.')
                         seen.add(signature)
                         for row in items:
-                            merged[row['id']] = row
+                            merged[(row['id'],row['effective'])] = row
                         if current_page * 100 >= total:
                             break
                     else:
                         raise ValueError('연혁 조회가 200페이지를 초과했습니다. 법령명을 구체적으로 입력하세요.')
-                rows = sorted(merged.values(), key=lambda r: (r['effective'], r['promulgated'], r['id']), reverse=True)
+                cutoff = today_in_korea().strftime('%Y%m%d')
+                eligible = [r for r in merged.values() if re.fullmatch(r'\d{8}',r['effective']) and r['effective'] <= cutoff and (not r['promulgated'] or r['promulgated'] <= cutoff)]
+                rows = sorted(eligible, key=lambda r: (r['effective'], r['promulgated'], r['id']), reverse=True)
                 # Keep a small, short-lived cache so UI paging does not re-fetch everything.
                 if len(self._revision_cache) >= 32:
                     self._revision_cache.pop(next(iter(self._revision_cache)))
@@ -214,9 +217,11 @@ class LawAPI:
         return {'total': len(rows), 'page': page, 'laws': rows[(page-1)*display:page*display]}
 
     def _search_page(self, query, page, kind, display, scope=None):
-        params = {'query': query, 'display': display, 'page': page, 'target': kind, 'search': 1}
+        params = {'query': query, 'display': display, 'page': page, 'target': 'eflaw' if kind == 'law' else kind, 'search': 1}
         if scope is not None:
             params['nw'] = scope
+        elif kind == 'law':
+            params['nw'] = 3
         root = xml_root(self.request('lawSearch.do', **params))
         if kind == 'law':
             nodes = root.findall('.//law')
@@ -230,12 +235,16 @@ class LawAPI:
         return {'total': total, 'page': page, 'laws': [
             {'id': text(n, keys[0]), 'name': text(n, keys[1]),
              'promulgated': text(n, keys[2]), 'effective': text(n, '시행일자'),
-             'status': text(n, '현행연혁코드'), 'kind': kind}
+             'status': text(n, '현행연혁코드'), 'kind': kind, 'law_id': text(n,'법령ID')}
             for n in nodes]}
 
-    def fetch(self, mst, kind='law'):
+    def fetch(self, mst, kind='law', effective=''):
         if kind == 'admrul':
             return self.request('lawService.do', target='admrul', ID=mst)
+        if effective:
+            if not re.fullmatch(r'\d{8}', effective):
+                raise ValueError('본문 조회에 유효한 시행일(YYYYMMDD)이 필요합니다.')
+            return self.request('lawService.do', target='eflaw', MST=mst, efYd=effective)
         return self.request('lawService.do', MST=mst)
 
 

@@ -73,7 +73,10 @@ def create_app(settings=None, provider=None, law_api=None):
 
     @app.post('/api/laws/ingest')
     def ingest(body: IngestRequest):
-        return store.ingest(law_api.fetch(body.mst), provider, body.keyword_only)
+        raw = law_api.fetch(body.mst)
+        if not manager.collectible_date(parse_law(raw).effective):
+            raise ValueError('오늘 이후 시행 예정이거나 시행일이 잘못된 본문은 저장하지 않았습니다.')
+        return store.ingest(raw, provider, body.keyword_only, mst=body.mst)
 
     @app.post('/api/search')
     def search(body: SearchRequest):

@@ -182,9 +182,11 @@ def test_law_api_protocol(tmp_path, monkeypatch):
     import app.laws as mod
     def handle(request):
         assert request.url.params['OC'] == 'test-oc'
-        assert request.url.params['target'] == 'law'
         if request.url.path.endswith('lawSearch.do'):
+            assert request.url.params['target'] == 'eflaw'
+            assert request.url.params['nw'] == '3'
             return httpx.Response(200, content='<LawSearch><totalCnt>1</totalCnt><law><법령일련번호>123</법령일련번호><법령명한글>선박안전법</법령명한글><시행일자>20260101</시행일자></law></LawSearch>'.encode())
+        assert request.url.params['target'] == 'law'
         assert request.url.params['MST'] == '123'
         return httpx.Response(200, content=RAW)
     real_client = httpx.Client

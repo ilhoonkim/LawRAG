@@ -29,7 +29,7 @@ class FakeAPI:
                {'id':'103','name':'선박안전법','kind':'law','effective':'20990101','promulgated':'20981201','status':'시행예정'},
                {'id':'999','name':'실패법','kind':'law','effective':'20200101','promulgated':'20190101','status':'연혁'}]
         return {'laws':items,'total':len(items),'page':page}
-    def fetch(self,mst,kind='law'):
+    def fetch(self,mst,kind='law',effective=''):
         self.calls.append(('fetch',mst))
         if mst=='999':
             raise SetupError('법령 API 요청 실패')
@@ -102,6 +102,33 @@ def test_duplicate_queue_requests_do_not_duplicate(tmp_path):
     req=CollectionInput(items=[item(),item()])
     assert manager.queue(req)['queued']==1
     assert manager.queue(req)['queued']==0
+
+
+def test_future_collection_rejected_before_fetch_and_after_body_response(tmp_path, monkeypatch):
+    monkeypatch.setattr('app.management.today_in_korea', lambda: date(2026,10,21))
+    api = FakeAPI()
+    api.calls = []
+    manager = Management(Store(tmp_path), FakeProvider(), api)
+    for effective in ['20261022','20280101','20260230','202611']:
+        with pytest.raises(ValueError, match='시행'):
+            manager.queue(CollectionInput(items=[{**item('103'),'effective':effective}]))
+    assert not api.calls and manager.history(1)['total'] == 0
+    # An old client without metadata cannot bypass the check on fetched XML.
+    queued = manager.queue(CollectionInput(items=[item('103')]))
+    manager.run(queued['ids'])
+    history = manager.history(1)
+    assert history['items'][0]['status'] == 'failed'
+    assert '시행 예정' in history['items'][0]['reason']
+    with manager.store.connect() as db:
+        assert db.execute('SELECT count(*) FROM law_versions').fetchone()[0] == 0
+
+
+def test_legacy_ingest_endpoint_cannot_save_future_version(tmp_path):
+    app = create_app(Settings(data_dir=tmp_path), FakeProvider(), FakeAPI())
+    with TestClient(app) as client:
+        result = client.post('/api/laws/ingest', json={'mst':'103'})
+        assert result.status_code == 400 and '시행 예정' in result.json()['detail']
+        assert client.get('/api/status').json()['laws'] == []
 
 
 def test_chapter_hierarchy_preserved():

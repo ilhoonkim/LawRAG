@@ -17,7 +17,7 @@ class UIAPI(FakeAPI):
         items.extend({'id':str(i+200),'name':'선박안전법','kind':'law','effective':f'{2010+i}0101','promulgated':f'{2009+i}1201','status':'연혁'} for i in range(9))
         items.append({'id':'999','name':'선박안전법','kind':'law','effective':'20000101','promulgated':'19991201','status':'연혁'})
         return {'laws':items[(page-1)*display:page*display],'total':len(items),'page':page}
-    def fetch(self,mst,kind='law'):
+    def fetch(self,mst,kind='law',effective=''):
         if 200<=int(mst)<=208:
             n=int(mst)-200
             return version(f'{2010+n}0101',f'{2009+n}1201',mst)
