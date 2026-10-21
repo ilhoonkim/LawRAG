@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 from .laws import SetupError, parse_law, parse_admrul
-from .catalog import register_catalog, snapshot, queue_catalog, resolve_catalog_item, normalize_name
+from .catalog import register_catalog, normalize_name
 
 Kind = Literal['law', 'admrul']
 
@@ -28,10 +28,6 @@ class CollectionItem(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     promulgated: str = Field(default='', max_length=20)
     effective: str = Field(default='', max_length=20)
-
-
-class CatalogCollectionInput(BaseModel):
-    keyword_only: Literal[False] = False
 
 
 class CollectionInput(BaseModel):
@@ -133,7 +129,7 @@ class Management:
         if settings is not None and not settings.api_key:
             raise SetupError('.env의 LLM_API_KEY를 입력하고 서버를 재시작하세요. 수집은 임베딩까지 완료해야 합니다.')
 
-    def queue(self, request):
+    def queue(self, request, *, reindex=False):
         self.require_collection_keys()
         batch = uuid4().hex
         ids = []
@@ -142,7 +138,7 @@ class Management:
             for item in request.items:
                 duplicate = db.execute("SELECT 1 FROM collection_history WHERE kind=? AND mst=? AND status IN ('queued','running')", (item.kind, item.mst)).fetchone()
                 collected = db.execute('SELECT 1 FROM law_versions WHERE kind=? AND mst=?', (item.kind, item.mst)).fetchone()
-                if duplicate or collected:
+                if duplicate or (collected and not reindex):
                     continue
                 event_id = uuid4().hex
                 db.execute('INSERT INTO collection_history VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -151,7 +147,7 @@ class Management:
                 ids.append(event_id)
         return {'batch': batch, 'queued': len(ids), 'ids': ids}
 
-    def run(self, ids, resolve_catalog=False):
+    def run(self, ids):
         # One API/embedding request stream at a time; queue/status remains readable.
         with self.worker_lock:
             for event_id in ids:
@@ -159,13 +155,9 @@ class Management:
                     event = dict(db.execute('SELECT * FROM collection_history WHERE id=?', (event_id,)).fetchone())
                     db.execute("UPDATE collection_history SET status='running',started_at=? WHERE id=?", (now(), event_id))
                 try:
-                    if resolve_catalog:
-                        event = resolve_catalog_item(self, event)
-                        if event is None:
-                            continue
                     raw = self.api.fetch(event['mst'], kind=event['kind'])
                     law = parse_admrul(raw) if event['kind'] == 'admrul' else parse_law(raw)
-                    if 'expected_name' in event and (normalize_name(law.name) != normalize_name(event['expected_name']) or law.effective != event['expected_effective']):
+                    if normalize_name(law.name) != normalize_name(event['name']) or (event['effective'] and law.effective != event['effective']):
                         raise ValueError('본문 응답의 법령명 또는 시행일이 선택한 버전과 다릅니다.')
                     result = self.store.ingest(raw, self.provider, bool(event['keyword_only']),
                                               mst=event['mst'], kind=event['kind'], archive_only=True)
@@ -212,17 +204,6 @@ class Management:
 
 def management_router(manager):
     router = APIRouter(prefix='/api/management')
-
-    @router.get('/catalog/real-estate')
-    def real_estate_catalog():
-        return snapshot(manager)
-
-    @router.post('/catalog/real-estate/collect', status_code=202)
-    def collect_real_estate(body: CatalogCollectionInput, background: BackgroundTasks):
-        result = queue_catalog(manager, body.keyword_only)
-        if result['ids']:
-            background.add_task(manager.run, result['ids'], resolve_catalog=True)
-        return result
 
     @router.get('/categories')
     def categories():

@@ -49,11 +49,11 @@ def item(mst='101',name='선박안전법'):
 
 
 def test_specified_categories_registration_and_no_collection(client):
-    assert len(client.get('/api/management/categories').json()['items'])==26
+    assert len(client.get('/api/management/categories').json()['items'])==27
     r=client.post('/api/management/categories',json={'name':'선박안전법','kind':'law'})
-    assert len(r.json()['items'])==27
+    assert len(r.json()['items'])==28
     r=client.post('/api/management/categories',json={'name':'선박안전법','kind':'law'})
-    assert len(r.json()['items'])==27
+    assert len(r.json()['items'])==28
     assert client.get('/api/management/history').json()['total']==0
     assert client.get('/api/status').json()['laws']==[]
     assert client.post('/api/management/categories',json={'name':'  ','kind':'law'}).status_code==400
