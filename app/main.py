@@ -113,7 +113,7 @@ def create_app(settings=None, provider=None, law_api=None):
                 answer = (f'질문한 법령의 기준일({result["as_of"]}) 적용 버전이 미수집 상태입니다: {targets}. '
                           '법령관리에서 이 버전을 수집한 뒤 다시 질문해 주세요.')
             else:
-                answer = '수집된 법령에서 질문에 답할 만한 근거 조문을 찾지 못했습니다. 법령명이나 질문을 구체적으로 입력해 주세요.'
+                answer = '수집된 법령에서 질문에 답할 만한 근거 조문을 찾지 못했습니다. 어떤 상황인지 조금 더 자세히 알려주세요.'
             return {**result, 'answer': answer, 'generated': False}
         question = f'기준일: {result["as_of"]} (이 날짜에 시행 중인 수집 버전 기준)\n{body.question}'
         answer = provider.answer(question, evidence, [m.model_dump() for m in body.history])

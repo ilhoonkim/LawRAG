@@ -285,29 +285,57 @@ class Store:
                 longest = max(named_laws, key=len)
                 rows = [r for r in rows if r['law_name'] == longest]
             similarities = {}
+            queries = [expanded_query(question)]
             if mode == 'hybrid' and rows:
                 if any(r['model'] != provider.fingerprint or r['vector'] is None or r['title_vector'] is None for r in rows):
                     raise SetupError('벡터가 없거나 임베딩 모델이 변경되었습니다. 버전 상세에서 제목·본문 재색인을 실행하거나 키워드 모드를 선택하세요.')
-                vector = provider.embed([expanded_query(question)])[0]
-                if any(len(r['vector']) != 4 * len(vector) or len(r['title_vector']) != 4 * len(vector) for r in rows):
+                vectors = provider.embed(queries)
+                if len(vectors) != len(queries) or any(
+                    len(r['vector']) != 4 * len(vector) or len(r['title_vector']) != 4 * len(vector)
+                    for r in rows for vector in vectors):
                     raise SetupError('임베딩 차원이 다릅니다. 새 DATA_DIR에서 재색인하세요.')
-                packed = sqlite_vec.serialize_float32(vector)
-                for row in rows:
-                    similarities[row['id']] = tuple(db.execute('SELECT 1 - vec_distance_cosine(?,?), 1 - vec_distance_cosine(?,?)', (row['title_vector'], packed, row['vector'], packed)).fetchone())
+                def compare(vector, row):
+                    return tuple(db.execute('SELECT 1 - vec_distance_cosine(?,?), 1 - vec_distance_cosine(?,?)',
+                        (row['title_vector'], vector, row['vector'], vector)).fetchone())
+                original = sqlite_vec.serialize_float32(vectors[0])
+                similarities = {row['id']:[compare(original,row)] for row in rows}
+                if callable(getattr(provider, 'search_queries', None)):
+                    # A short semantic shortlist supplies the actual vocabulary
+                    # of this corpus without requiring a user-provided law name.
+                    shortlist = sorted(rows, key=lambda r: title_weight*similarities[r['id']][0][0]
+                                       + (1-title_weight)*similarities[r['id']][0][1], reverse=True)[:12]
+                    candidates = [{k:r[k] for k in ('law_name','number','title')} | {'body':body_text(r)[:600]}
+                                  for r in shortlist]
+                    additions = [q for q in provider.search_queries(question,candidates=candidates) if q not in queries]
+                    if additions:
+                        extra_vectors = provider.embed(additions)
+                        if len(extra_vectors) != len(additions) or any(len(v) != len(vectors[0]) for v in extra_vectors):
+                            raise ValueError('검색어 임베딩 응답의 개수 또는 차원이 다릅니다.')
+                        queries.extend(additions)
+                        packed = [sqlite_vec.serialize_float32(v) for v in extra_vectors]
+                        for row in rows:
+                            similarities[row['id']].extend(compare(vector,row) for vector in packed)
         results = []
         for row in rows:
-            title_lexical, body_lexical = lexical_components(question, row)
-            title_semantic, body_semantic = [max(0.,min(1.,v)) for v in similarities.get(row['id'], (0.,0.))]
-            title_score = .65*title_semantic + .35*title_lexical if mode == 'hybrid' else title_lexical
-            body_score = .65*body_semantic + .35*body_lexical if mode == 'hybrid' else body_lexical
-            score = combined_score(title_score,body_score,title_weight,min_title,min_body)
-            if score is None or score < threshold:
+            matches = []
+            for query, semantic in zip(queries, similarities.get(row['id'], [(0.,0.)])):
+                title_lexical, body_lexical = lexical_components(query, row)
+                title_semantic, body_semantic = [max(0.,min(1.,v)) for v in semantic]
+                title_score = .65*title_semantic + .35*title_lexical if mode == 'hybrid' else title_lexical
+                body_score = .65*body_semantic + .35*body_lexical if mode == 'hybrid' else body_lexical
+                score = combined_score(title_score,body_score,title_weight,min_title,min_body)
+                if score is not None and score >= threshold:
+                    matches.append((score,title_score,body_score,title_lexical,body_lexical,title_semantic,body_semantic,query))
+            if not matches:
                 continue
+            # Keep title/body scores from the SAME query, not unrelated maxima.
+            score,title_score,body_score,title_lexical,body_lexical,title_semantic,body_semantic,query = max(matches, key=lambda m:m[0])
             row.pop('vector'); row.pop('title_vector'); row.pop('model')
             row.update(score=round(score,4),title_score=round(title_score,4),body_score=round(body_score,4),
                 title_keyword_score=round(title_lexical,4),body_keyword_score=round(body_lexical,4),
                 title_semantic_score=round(title_semantic,4) if mode=='hybrid' else None,
                 body_semantic_score=round(body_semantic,4) if mode=='hybrid' else None,
+                matched_query=query,
                 html_url='/documents/' + row.pop('html') + '#' + quote(row['section_id'],safe=''))
             results.append(row)
         return sorted(results,key=lambda r:(-r['score'],r['id']))[:limit]
