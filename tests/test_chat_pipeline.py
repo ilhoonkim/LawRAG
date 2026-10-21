@@ -22,15 +22,15 @@ class PipelineStore:
         assert provider.steps == ['rewrite']
         assert question == '집주인이 필요한 서류는?'
         assert kw['variants'] == ['임대인 필요 준비 서류']
-        assert limit == 20
+        assert limit == 15
         provider.steps.append('search')
         return [row(1,.9), row(2,.8,'무관한 본문'), row(3,.7)]
     def expand_context(self, roots, **kwargs):
-        assert {r['number'] for r in roots} == {'제1조','제2조','제3조'}
+        assert {r['number'] for r in roots} == {'제1조','제3조'}
         # A rejected search result must not be reintroduced as a reference.
         return [{**r,'reference_titles':[{'number':'제2조','law_name':'합성법','title':'무관한 조문'}]} for r in roots] + [
-            row(2,.9,'무관한 본문'), {**row(4,.95),'referenced_by':'제1조','relation':'references_article'},
-            {**row(5,.95,'무관한 본문'),'referenced_by':'제1조','relation':'references_article'}], [{'law_name':'외부법','number':'별표 1'}]
+            {**row(2,.9,'무관한 본문'),'relation':'references_article','referenced_by':'제1조'},
+            {**row(4,.95),'referenced_by':'제1조','relation':'references_article'}], [{'law_name':'외부법','number':'별표 1'}]
 
 
 class PipelineProvider:
@@ -42,6 +42,8 @@ class PipelineProvider:
         return '임대인 필요 준비 서류'
     def filter_evidence(self, question, candidates):
         self.steps.append('review')
+        assert {r['number'] for r in candidates} == {'제1조','제2조','제3조'}
+        assert all(not r.get('relation') for r in candidates)
         return [r for r in candidates if '무관한' not in r['body']]
     def assess_evidence(self, question, evidence, missing_references, as_of):
         return {"sufficient":bool(evidence),"missing_issues":[],"missing_facts":[],"search_queries":[]}
@@ -65,12 +67,12 @@ def test_four_stages_rejected_refs_removed_sorted_before_answer():
     assert result['generated']
 
 
-def test_linked_only_context_can_answer_without_becoming_a_recommended_source():
+def test_no_approved_parent_means_no_reference_expansion_or_answer():
     provider = PipelineProvider()
     provider.filter_evidence = lambda question, rows: [r for r in rows if r['number']=='제4조']
     result = run_chat(PipelineStore(),provider,Settings(),ChatRequest(question='집주인이 필요한 서류는?'))
-    assert result['evidence'] == [] and result['generated']
-    assert result['linked_context_count'] == 1 and provider.context[0]['number'] == '제4조'
+    assert result['evidence'] == [] and not result['generated']
+    assert result['linked_context_count'] == 0 and provider.context is None
 
 
 def test_prompt_separates_linked_context_and_numbers_only_visible_sources(monkeypatch):
@@ -128,8 +130,8 @@ def test_filter_reads_full_bodies_batches_and_keeps_original_data(monkeypatch):
     monkeypatch.setattr(provider,'post',post)
     candidates = [row(i,.9, '본문' * 5000 + f'끝{i}') for i in range(1,4)]
     result = provider.filter_evidence('질문', candidates)
-    assert len(batches) == 3
-    assert batches[2][0]['body'].endswith('끝3')
+    assert len(batches) == 1
+    assert batches[0][2]['body'].endswith('끝3')
     assert [r['number'] for r in result] == ['제1조','제3조']
     assert all(r['relevance_checked'] for r in result)
     assert result[0]['html_url'] == candidates[0]['html_url']

@@ -13,6 +13,11 @@ def source_key(row):
     return row['version'], row['law_name'], row['number']
 
 
+def review_limit(settings):
+    # Existing .env values and a larger API limit must not bypass the chat cap.
+    return min(15, max(1, settings.candidate_limit))
+
+
 def retrieve(store, provider, settings, body, *, variants=None, limit=None, expand=True):
     cutoff, clarification = resolve_date(body.question, body.as_of)
     if clarification:
@@ -43,13 +48,25 @@ def budgeted(evidence, max_chars):
 
 
 def review(store, provider, settings, question, candidates, cutoff, rejected):
-    # Expand before filtering so necessary exceptions/definitions can establish relevance.
-    expanded, missing = store.expand_context(candidates,cutoff=cutoff,question=question,
+    # Search already applies the content threshold. Review only its highest
+    # ranked hits, never references carrying an inherited score.
+    ordered = sorted((e for e in candidates if not e.get('relation') and source_key(e) not in rejected),
+                     key=lambda e:(-e.get('score',0),source_key(e)))
+    unique = {}
+    for e in ordered:
+        unique.setdefault(source_key(e),e)
+    selected = list(unique.values())[:review_limit(settings)]
+    reviewed = provider.filter_evidence(question,selected) if selected else []
+    rejected.update({source_key(e) for e in selected} - {source_key(e) for e in reviewed})
+    if not reviewed:
+        return [], []
+    # Only approved parents contribute references. These remain answer context,
+    # not another potentially huge candidate-verification round.
+    expanded, missing = store.expand_context(reviewed,cutoff=cutoff,question=question,
         limit=min(80,max(0,settings.reference_limit)))
-    unique = {source_key(e):e for e in reversed(expanded) if source_key(e) not in rejected}
-    reviewed = provider.filter_evidence(question,list(unique.values()))
-    rejected.update(set(unique) - {source_key(e) for e in reviewed})
-    evidence, omitted = budgeted(reviewed,max(1000,settings.context_max_chars))
+    expanded = [{**e,'evidence_role':'supporting'} if e.get('relation') else e
+                for e in expanded if source_key(e) not in rejected]
+    evidence, omitted = budgeted(expanded,max(1000,settings.context_max_chars))
     valid = {source_key(e) for e in evidence}
     for e in evidence:
         e.pop('parent_context',None)
@@ -71,7 +88,7 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
     rewritten = provider.rewrite_question(body.question)
     progress('search')
     result = retrieve(store,provider,settings,search_body,variants=[rewritten],
-                      limit=max(body.limit,min(50,settings.candidate_limit)),expand=False)
+                      limit=review_limit(settings),expand=False)
     candidates, rejected = result['evidence'], set()
     progress('review')
     evidence, missing = review(store,provider,settings,body.question,candidates,cutoff,rejected)
@@ -94,7 +111,7 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
         rounds = 1
         progress('additional_search')
         additional = retrieve(store,provider,settings,search_body,variants=extra_queries,
-            limit=max(body.limit,min(50,settings.candidate_limit)),expand=False)['evidence']
+            limit=review_limit(settings),expand=False)['evidence']
         candidates = list({source_key(e):e for e in candidates+additional}.values())
         merged = {source_key(e):e for e in evidence if source_key(e) not in rejected}
         for e in additional:

@@ -25,7 +25,7 @@ class Settings:
     embedding_model: str = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-large')
     chat_model: str = os.getenv('CHAT_MODEL', 'gpt-4.1')
     rerank_model: str = os.getenv('RERANK_MODEL', '')
-    candidate_limit: int = int(os.getenv('SEARCH_CANDIDATE_LIMIT', '20'))
+    candidate_limit: int = int(os.getenv('SEARCH_CANDIDATE_LIMIT', '15'))
     search_fusion: str = os.getenv('SEARCH_FUSION', 'weighted')
     reference_limit: int = int(os.getenv('REFERENCE_LIMIT', '40'))
     context_max_chars: int = int(os.getenv('CONTEXT_MAX_CHARS', '60000'))
