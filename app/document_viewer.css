@@ -1,0 +1,26 @@
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{display:flex;flex-direction:column;color:#4b5059;background:#fff;font:13px/1.9 "Noto Sans KR","Malgun Gothic",system-ui,sans-serif}
+a{color:#345aa6;text-underline-offset:3px}
+a:focus-visible,summary:focus-visible{outline:2px solid #327ce0;outline-offset:2px}
+.document-header{flex:none;padding:14px 24px 12px;text-align:center;border-bottom:1px solid #e5e7eb;background:#fff}
+h1{margin:0 0 4px;font-size:18px;font-weight:600;color:#303743}
+.document-meta{margin:0;color:#818894;font-size:11px}
+.document-meta a{margin-left:12px}
+.document-layout{display:grid;grid-template-columns:250px minmax(0,1fr);flex:1;min-height:0}
+.toc{overflow:auto;padding:14px 10px;border-right:1px solid #e4e7ed;background:#fafbfc;scrollbar-width:thin}
+.toc-title{margin:0 8px 8px;font-size:12px;color:#505969}
+.toc a{display:block;margin:2px 0;padding:5px 9px;border-radius:4px;color:#6c7480;text-decoration:none;font-size:11px;line-height:1.7;word-break:keep-all;overflow-wrap:break-word}
+.toc a:hover{background:#edf2fa;color:#345aa6}
+.toc .chapter-label{margin:16px 8px 6px;color:#343e50;font-size:11px;font-weight:600}
+.law-content{min-width:0;overflow:auto;padding:20px 24px 35px;scrollbar-width:thin}
+.chapter-heading{margin:20px 12px 8px;color:#444f86;font-size:15px;font-weight:500}
+.law-content section{margin:0 0 8px;padding:12px 14px;scroll-margin-top:20px;border:1px solid transparent;border-radius:4px}
+.law-content section:target{background:#fff6ce;border-color:#e3a62b}
+.law-content h2{font-size:13px;font-weight:600;color:#414a98;margin:0 0 5px}
+.law-content pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.95;margin:0}
+.source-note{margin:24px 14px 0;padding-top:12px;border-top:1px solid #e9ebef;color:#8a909b;font-size:11px}
+.source-note summary{cursor:pointer}
+.source-note p{max-width:850px}
+@media(max-width:700px){.document-layout{grid-template-columns:160px minmax(0,1fr)}.law-content{padding:12px 10px}.document-header{padding:10px}h1{font-size:16px}.law-content section{padding:10px}.toc{padding:8px 5px}}
+@media(max-width:460px){.document-layout{grid-template-columns:115px minmax(0,1fr)}.toc a{padding:5px;font-size:10px}.document-meta a{display:block;margin:2px 0}.law-content{padding:8px 4px}.law-content pre{font-size:12px}}

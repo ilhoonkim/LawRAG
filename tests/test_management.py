@@ -172,3 +172,24 @@ def test_migrate_legacy_store_without_losing_index(tmp_path):
 def test_duration_question_does_not_trigger_historical_clarification():
     value,clarification=resolve_date('선박 검사 유효기간은 얼마인가요?')
     assert value is not None and clarification is None
+
+
+def test_archived_html_viewer_upgrades_without_api_or_embeddings(tmp_path):
+    store=Store(tmp_path)
+    original=version('20200101','20191201')
+    saved=store.ingest(original,FakeProvider(),mst='102',archive_only=True)
+    html_path=tmp_path/'html'/(saved['version']+'.html')
+    html_path.write_text('<html>Legacy viewer</html>',encoding='utf-8')
+    class NoNetwork:
+        def __getattr__(self,name):
+            raise AssertionError('No network/model call allowed for archived document viewing')
+    app=create_app(Settings(data_dir=tmp_path),NoNetwork(),NoNetwork())
+    with TestClient(app) as client:
+        response=client.get('/documents/'+html_path.name)
+        assert response.status_code==200
+        assert 'data-viewer-version="2"' in response.text
+        assert '[시행 2020.01.01]' in response.text
+        assert 'id="선박안전법-제3조"' in response.text
+        assert 'aria-label="조문 목차"' in response.text
+        assert response.text==html_path.read_text(encoding='utf-8')
+        assert (tmp_path/'raw'/(saved['version']+'.xml')).read_bytes()==original

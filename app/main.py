@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from .config import Settings
-from .laws import LawAPI, SetupError
+from .laws import LawAPI, SetupError, parse_law, parse_admrul, render_html
 from .provider import Provider
 from .store import Store
 from .management import Management, management_router
@@ -119,6 +119,22 @@ def create_app(settings=None, provider=None, law_api=None):
         path = settings.data_dir / 'html' / filename
         if not path.is_file():
             raise HTTPException(404, '문서가 없습니다.')
+        # Upgrade the viewer from this exact archived XML; no API/embedding call
+        # and no substitution with the currently effective version.
+        raw = settings.data_dir / 'raw' / (path.stem + '.xml')
+        if raw.is_file() and 'data-viewer-version="2"' not in path.read_text(encoding='utf-8')[:200]:
+            with store.connect() as db:
+                row = db.execute('SELECT kind FROM law_versions WHERE version=?', (path.stem,)).fetchone()
+            law = parse_admrul(raw.read_bytes()) if row and row['kind']=='admrul' else parse_law(raw.read_bytes())
+            if law.version != path.stem:
+                raise HTTPException(409, '보관 XML과 요청 버전이 일치하지 않습니다.')
+            from uuid import uuid4
+            temporary = path.with_suffix('.' + uuid4().hex + '.tmp')
+            try:
+                temporary.write_text(render_html(law),encoding='utf-8')
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
         return FileResponse(path, media_type='text/html')
 
     static = Path(__file__).parent / 'static'

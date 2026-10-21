@@ -1,6 +1,7 @@
 """Law API adapter, article parser and safe, immutable HTML snapshots."""
 import hashlib
 import html
+from pathlib import Path
 import re
 from time import monotonic
 import threading
@@ -107,9 +108,21 @@ def parse_law(raw: bytes) -> Law:
                'https://www.law.go.kr/법령/' + quote(name, safe=''), text(root, './/기본정보/공포일자'), annexes=parse_annexes(root, name))
 
 
+VIEWER_CSS = Path(__file__).with_name("document_viewer.css").read_text(encoding="utf-8")
+
+
 def render_html(law: Law) -> str:
     esc = html.escape
-    toc = ''.join(f'<a href="#{quote(a.section_id, safe="")}">{esc(a.number)} {esc(a.title)}</a>' for a in law.articles)
+    toc_parts, sections, target_styles = [], [], []
+    last_chapter = ''
+    def heading(number, title):
+        return number + (f'({title})' if title else '')
+    def add_toc(node, index):
+        label = esc(heading(node.number, node.title))
+        toc_parts.append(f'<a data-section-index="{index}" href="#{quote(node.section_id, safe="")}">{label}</a>')
+        # Numeric selectors keep law text out of CSS, while standalone HTML
+        # still highlights the matching TOC entry without JavaScript.
+        target_styles.append(f'body:has(.law-content section:nth-of-type({index}):target) .toc a[data-section-index="{index}"]' + '{background:#eaf0ff;color:#3f4b9c;font-weight:600}')
     def annotated_body(article):
         by_number = {a.number: a for a in law.articles}
         parts, cursor = [], 0
@@ -125,15 +138,26 @@ def render_html(law: Law) -> str:
             cursor = match.end()
         parts.append(esc(article.body[cursor:]))
         return ''.join(parts)
-    sections = ''.join(f'<section id="{esc(a.section_id, quote=True)}"><h2>{esc(a.number)} {esc(a.title)}</h2><pre>{annotated_body(a)}</pre></section>' for a in law.articles)
-    for annex in law.annexes:
+    for index, article in enumerate(law.articles, 1):
+        if article.chapter and article.chapter != last_chapter:
+            toc_parts.append(f'<p class="chapter-label">{esc(article.chapter)}</p>')
+            sections.append(f'<h3 class="chapter-heading">{esc(article.chapter)}</h3>')
+            last_chapter = article.chapter
+        add_toc(article, index)
+        sections.append(f'<section id="{esc(article.section_id, quote=True)}"><h2>{esc(heading(article.number,article.title))}</h2><pre>{annotated_body(article)}</pre></section>')
+    for index, annex in enumerate(law.annexes, len(law.articles)+1):
+        add_toc(annex, index)
         body = esc(annex.body) if annex.body else '별표 본문이 확보되지 않았습니다. 원문 파일 추출이 필요합니다.'
         link = f'<a href="{esc(annex.source_url, quote=True)}" target="_blank" rel="noopener noreferrer">별표 원문 파일</a>' if annex.source_url else ''
-        sections += f'<section id="{esc(annex.section_id, quote=True)}"><h2>{esc(annex.number)} {esc(annex.title)}</h2><pre>{body}</pre>{link}</section>'
-    return f'''<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(law.name)}</title>
-<style>body{{font:16px/1.8 system-ui;margin:32px;color:#203344}}nav a{{display:inline-block;margin:5px 12px}}section{{padding:20px;scroll-margin-top:16px;border-bottom:1px solid #ddd}}section:target{{background:#e4f3ff;border-left:4px solid #1687cc}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;font:15px/1.9 monospace}}.notice{{background:#fff4d5;padding:14px}}</style>
-<h1>{esc(law.name)}</h1><p>시행일: {esc(law.effective)} · <a href="{esc(law.source_url)}" target="_blank" rel="noopener noreferrer">법령정보센터 원문</a></p>
-<p class="notice">API 조문 텍스트를 보존한 문서입니다. API에서 누락된 수식·이미지·별표 및 원래 페이지 배치는 복원되지 않습니다. 필요한 경우 공식 원문과 대조하세요.</p><nav>{toc}</nav>{sections}</html>'''
+        sections.append(f'<section id="{esc(annex.section_id, quote=True)}"><h2>{esc(heading(annex.number,annex.title))}</h2><pre>{body}</pre>{link}</section>')
+    def date_label(value):
+        return f'{value[:4]}.{value[4:6]}.{value[6:]}' if re.fullmatch(r'\d{8}',value or '') else value or '미상'
+    return f'''<!doctype html><html lang="ko" data-viewer-version="2"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(law.name)}</title>
+<style>{VIEWER_CSS}{''.join(target_styles)}</style></head><body>
+<header class="document-header"><h1>{esc(law.name)}</h1><p class="document-meta">[시행 {esc(date_label(law.effective))}] [공포·발령 {esc(date_label(law.promulgated))}]<a href="{esc(law.source_url,quote=True)}" target="_blank" rel="noopener noreferrer">법령정보센터 원문</a></p></header>
+<div class="document-layout"><nav class="toc" aria-label="조문 목차"><h2 class="toc-title">조문 목차</h2>{''.join(toc_parts)}</nav>
+<main class="law-content" aria-label="법령 본문">{''.join(sections)}<details class="source-note"><summary>자료 안내</summary><p>수집한 해당 버전의 API 텍스트입니다. 조문 줄바꿈과 참조 제목을 표시합니다. API에서 누락된 수식·이미지·별표 및 원래 페이지 배치는 복원되지 않습니다. 외부 원문 링크는 법령정보센터의 현재 화면으로 연결될 수 있으므로 시행일을 확인하세요.</p></details></main></div></body></html>'''
+
 
 
 class LawAPI:

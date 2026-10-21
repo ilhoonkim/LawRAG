@@ -7,6 +7,22 @@ import '@fontsource-variable/noto-sans-kr';
 import { ChatIcon, LawIcon, HomeIcon } from './Icons';
 import './style.css';
 
+function sourceLoaded(event) {
+  const frame = event.currentTarget;
+  const win = frame.contentWindow;
+  function syncToc() {
+    const current = win.location.hash;
+    frame.contentDocument.querySelectorAll('.toc a').forEach(link => {
+      if (link.hash === current) {
+        link.setAttribute('aria-current', 'location');
+        link.scrollIntoView({block:'nearest'});
+      } else link.removeAttribute('aria-current');
+    });
+  }
+  syncToc();
+  win.addEventListener('hashchange', syncToc);
+}
+
 function App() {
   const [page,setPage]=useState(location.hash==='#laws'?'laws':'chat');
   const [visitedManagement,setVisitedManagement]=useState(location.hash==='#laws');
@@ -22,7 +38,7 @@ function App() {
       <Chat visible={page==='chat'} status={status} onSource={setSource}/>
       {visitedManagement&&<LawManagement visible={page==='laws'} onSource={setSource} onStatusChange={refreshStatus}/>}
     </div>
-    {source&&<Modal title={`${source.law_name} ${source.number} ${source.title||''}`} id="source-dialog" onClose={()=>setSource(null)}><iframe title="법령 원문 조문" src={source.html_url} sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"/></Modal>}
+    {source&&<Modal title={`${source.law_name} ${source.number} ${source.title||''}`} id="source-dialog" onClose={()=>setSource(null)}><iframe onLoad={sourceLoaded} title="법령 원문 조문" src={source.html_url} sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"/></Modal>}
   </>;
 }
 createRoot(document.getElementById('root')).render(<App/>);

@@ -68,7 +68,7 @@ def test_self_and_other_law_same_number_are_not_mislinked():
     law=parse_law(referenced_raw())
     law.articles[1].body='이 법 제11조를 적용한다. 「다른법」 제11조는 별도로 확인한다.'
     html=render_html(law)
-    assert html.count('제11조(허가구역 내 토지거래에 대한 허가)</a>')==1
+    assert html.split('<main ',1)[1].count('제11조(허가구역 내 토지거래에 대한 허가)</a>')==1
     assert '「다른법」 제11조는' in html
     assert article_links('「다른법」과 달리 이 법 제11조를 적용한다.',law.name)==[('제11조',law.name)]
     assert article_links('법 제11조에 따라','선박안전법 시행령')==[('제11조','법(대상 확인 필요)')]
