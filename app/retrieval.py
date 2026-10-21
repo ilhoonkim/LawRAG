@@ -46,12 +46,39 @@ def fuse(rankings, constant=60):
     return scores
 
 
+def field_rrf(per_query, mode, exact_ids=(), constant=60, depth=50):
+    """Fuse query/retriever ranks within each field, then fuse the two fields.
+
+    A rewrite adds a retrieval path, not another vote at the final field level.
+    Missing field hits contribute zero; the maximum stays 2 / (constant + 1).
+    Original explicit law/article identifiers are pinned in each field instead
+    of being counted as a third, unrelated RRF dimension.
+    """
+    fields = {'title': ('title', 'title_semantic'), 'body': ('lexical', 'semantic')}
+    rankings, ranks = [], {}
+    for field, signals in fields.items():
+        lists = []
+        for scores in per_query:
+            for signal in signals if mode == 'hybrid' else signals[:1]:
+                ordered = sorted(scores, key=lambda s: (-s[signal], s['row']['id']))
+                lists.append([s['row']['id'] for s in ordered if s[signal] > 0][:depth])
+        combined = fuse(lists, constant)
+        ordered = sorted(combined, key=lambda key: (-combined[key], key))
+        ranking = list(dict.fromkeys([*exact_ids, *ordered]))[:depth]
+        rankings.append(ranking)
+        ranks[field] = {key: rank for rank, key in enumerate(ranking, 1)}
+    return fuse(rankings, constant), ranks
+
+
 def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48,
            limit=20, mode='hybrid', fusion='weighted', compare=False):
     if fusion not in ('weighted','rrf') or not 0 <= threshold <= 1:
         raise ValueError('검색 결합 방식 또는 임계치가 올바르지 않습니다.')
     selected = store.temporal_versions(cutoff)['versions']
     queries = list(dict.fromkeys([question, *variants]))
+    fusion_metadata = {'queries': queries, 'threshold_basis': 'weighted_score',
+                       'rrf_constant': 60, 'rrf_fields': ['title', 'body'],
+                       'rrf_strategy': 'field_hierarchical', 'rrf_max_score': 2/61}
     rows = []
     with store.connect() as db:
         for law in selected:
@@ -60,12 +87,13 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
                              'effective':law['effective'], 'promulgated':law['promulgated'],
                              'source_url':law['source_url'], 'id':law['version']+':'+str(r['position'])})
         if not rows:
-            return {'weighted':[], 'rrf':[], 'queries':queries} if compare else []
+            return {'weighted':[], 'rrf':[], **fusion_metadata} if compare else []
         if mode == 'hybrid':
-            if any(r['model'] != provider.fingerprint or r['vector'] is None for r in rows):
-                raise SetupError('벡터가 없거나 임베딩 모델이 다릅니다. 저장 자료를 재임베딩하거나 키워드 검색을 선택하세요.')
+            if any(r['model'] != provider.fingerprint or r['vector'] is None or r['title_vector'] is None for r in rows):
+                raise SetupError('제목·본문 벡터가 없거나 임베딩 모델이 다릅니다. 저장 자료를 재임베딩하거나 키워드 검색을 선택하세요.')
             vectors = provider.embed(queries)
-            if len(vectors) != len(queries) or any(len(r['vector']) != 4*len(v) for r in rows for v in vectors):
+            if len(vectors) != len(queries) or any(len(r[field]) != 4*len(v)
+                    for r in rows for v in vectors for field in ('vector', 'title_vector')):
                 raise SetupError('검색 임베딩 차원이 저장된 자료와 다릅니다. 재임베딩을 확인하세요.')
             packed = [sqlite_vec.serialize_float32(v) for v in vectors]
         else:
@@ -83,31 +111,29 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
                 # A focused item can match even when its parent has a generic heading.
                 matches = sorted([{**u,'score':content_overlap(clean,u['text'])} for u in units], key=lambda u:-u['score'])
                 lexical = max([content_overlap(clean,body_text(row))] + [m['score'] for m in matches])
-                semantic = max(0.,min(1.,db.execute('SELECT 1-vec_distance_cosine(?,?)',(row['vector'],vector)).fetchone()[0])) if vector else 0.
+                semantic, title_semantic = (0., 0.)
+                if vector:
+                    distances = db.execute('SELECT 1-vec_distance_cosine(?,?), 1-vec_distance_cosine(?,?)',
+                        (row['vector'],vector,row['title_vector'],vector)).fetchone()
+                    semantic, title_semantic = (max(0., min(1., value)) for value in distances)
                 content = .65*semantic + .35*lexical if vector else lexical
                 law = 1. if row['law_name'] in question else 0.
                 exact = law and any(re.sub(r'\s+','',m.group()) == row['number']
                     for m in re.finditer(r'제\s*\d+\s*조(?:의\s*\d+)?',question))
-                # Title vectors in legacy DBs include law names; deliberately don't
-                # use them as a separate semantic topic score. No reindex is needed.
+                # Preserve the weighted/content gate. The law-name/article-title
+                # vector participates in field RRF, but cannot bypass body quality.
                 quality = min(1., .80*content + .20*title + .03*law)
                 if exact:
                     quality = max(quality,.95)
-                scored.append({'row':row, 'quality':quality, 'keyword':.80*lexical+.20*title,
-                    'semantic':semantic, 'title':title, 'body':content, 'lexical':lexical,
+                scored.append({'row':row, 'quality':quality,
+                    'semantic':semantic, 'title':title, 'title_semantic':title_semantic,
+                    'body':content, 'lexical':lexical,
                     'law':law, 'exact':bool(exact), 'query':query,
                     'matches':[{k:m[k] for k in ('location','text','start','end')} for m in matches[:3] if m['score'] > 0]})
             per_query.append(scored)
-    # Independent keyword and semantic lists for each query, not a blend's rank.
-    rankings = []
-    for scores in per_query:
-        for field in (('keyword','semantic') if mode=='hybrid' else ('keyword',)):
-            rankings.append([s['row']['id'] for s in sorted(scores,key=lambda s:(-s[field],s['row']['id']))[:50] if s[field] > 0])
     exact_ids = [s['row']['id'] for s in per_query[0] if s['exact']]
-    if exact_ids:
-        rankings.append(exact_ids)
-    rrf = fuse(rankings)
-    normalizer = len(rankings)/61 if rankings else 1
+    rrf, field_ranks = field_rrf(per_query, mode, exact_ids)
+    normalizer = fusion_metadata['rrf_max_score']
     result = []
     for i,row in enumerate(rows):
         observations = [scores[i] for scores in per_query]
@@ -125,6 +151,9 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
             body_score=round(best['body'],4), law_name_score=best['law'],
             body_keyword_score=round(best['lexical'],4), body_semantic_score=round(best['semantic'],4),
             title_keyword_score=round(best['title'],4), exact_identifier=best['exact'],
+            title_semantic_score=round(best['title_semantic'],4),
+            rrf_raw_score=rrf[row['id']], rrf_max_score=normalizer,
+            rrf_field_ranks={field:ranks.get(row['id']) for field,ranks in field_ranks.items()},
             matched_query=best['query'], matched_units=best['matches'], context_restored=True,
             retrieval_queries=[s['query'] for s in observations if s['quality'] >= threshold],
             html_url='/documents/'+row['version']+'.html#'+quote(row['section_id'],safe=''))
@@ -133,6 +162,5 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
         ordered = sorted(result,key=lambda r:(-r[method+'_score'],-r['weighted_score'],r['id']))[:limit]
         return [{**r,'score':r[method+'_score'],'fusion':method} for r in ordered]
     if compare:
-        return {'weighted':ranked('weighted'),'rrf':ranked('rrf'),'queries':queries,
-                'threshold_basis':'weighted_score', 'rrf_constant':60}
+        return {'weighted':ranked('weighted'),'rrf':ranked('rrf'), **fusion_metadata}
     return ranked(fusion)
