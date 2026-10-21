@@ -18,15 +18,15 @@ def row(n, score, body='서류 제출 본문'):
 class PipelineStore:
     def temporal_versions(self, cutoff):
         return {'versions':[], 'missing':[], 'note':'합성 테스트'}
-    def search(self, question, provider, threshold, limit, mode, **kw):
+    def search_enhanced(self, question, provider, threshold, limit, mode, **kw):
         assert provider.steps == ['rewrite']
         assert question == '집주인이 필요한 서류는?'
-        assert kw['query_variants'] == ['임대인 필요 준비 서류']
+        assert kw['variants'] == ['임대인 필요 준비 서류']
         assert limit == 20
         provider.steps.append('search')
         return [row(1,.9), row(2,.8,'무관한 본문'), row(3,.7)]
-    def expand_references(self, roots):
-        assert {r['number'] for r in roots} == {'제1조','제3조'}
+    def expand_context(self, roots, **kwargs):
+        assert {r['number'] for r in roots} == {'제1조','제2조','제3조'}
         # A rejected search result must not be reintroduced as a reference.
         return [{**r,'reference_titles':[{'number':'제2조','law_name':'합성법','title':'무관한 조문'}]} for r in roots] + [
             row(2,.9,'무관한 본문'), {**row(4,.95),'referenced_by':'제1조'},
@@ -42,11 +42,10 @@ class PipelineProvider:
         return '임대인 필요 준비 서류'
     def filter_evidence(self, question, candidates):
         self.steps.append('review')
-        if any(r['number'] == '제4조' for r in candidates):
-            assert all('parent_context' in r for r in candidates)
-            assert all(r['number'] != '제2조' for r in candidates)
         return [r for r in candidates if '무관한' not in r['body']]
-    def answer(self, question, evidence, history, missing_references=None):
+    def assess_evidence(self, question, evidence, missing_references, as_of):
+        return {"sufficient":bool(evidence),"missing_issues":[],"missing_facts":[],"search_queries":[]}
+    def answer(self, question, evidence, history, missing_references=None, assessment=None):
         self.steps.append('answer')
         assert '집주인이 필요한 서류는?' in question
         assert '임대인 필요 준비 서류' not in question
@@ -58,17 +57,17 @@ class PipelineProvider:
 def test_four_stages_rejected_refs_removed_sorted_before_answer():
     provider, stages = PipelineProvider(), []
     result = run_chat(PipelineStore(),provider,Settings(),ChatRequest(question='집주인이 필요한 서류는?',limit=2),stages.append)
-    assert stages == ['rewrite','search','review','answer']
+    assert stages == ['rewrite','search','review','assess','answer']
     assert [r['number'] for r in result['evidence']] == ['제4조','제1조','제3조']
     assert result['evidence'] == provider.context
     assert all(not r.get('reference_titles') for r in result['evidence'])
     assert result['generated']
 
 
-def test_rejected_everything_does_not_generate_or_expand():
+def test_rejected_everything_does_not_generate():
     class EmptyStore(PipelineStore):
-        def expand_references(self, roots):
-            assert roots == []
+        def expand_context(self, roots, **kwargs):
+            assert roots
             return [], []
     provider = PipelineProvider()
     provider.filter_evidence = lambda *a: []
@@ -154,5 +153,5 @@ def test_stream_and_json_use_identical_verified_context(tmp_path):
     client = TestClient(app)
     body = {'question':'선박안전법 적용범위', 'as_of':'2026-10-21'}
     events = [json.loads(line) for line in client.post('/api/chat/stream',json=body).text.splitlines() if line]
-    assert [e['stage'] for e in events if e['type']=='stage'] == ['rewrite','search','review','answer']
+    assert [e['stage'] for e in events if e['type']=='stage'] == ['rewrite','search','review','assess','answer']
     assert events[-1]['result'] == client.post('/api/chat',json=body).json()

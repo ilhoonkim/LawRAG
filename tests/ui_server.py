@@ -32,9 +32,18 @@ class UIProvider(FakeProvider):
         if candidates:
             time.sleep(.6)
         return super().filter_evidence(question,candidates)
+    def assess_evidence(self, question, evidence, missing_references, as_of):
+        import time
+        time.sleep(.5)
+        if '추가 검색' in question and not getattr(self,'extra_done',False):
+            self.extra_done=True
+            return {'sufficient':False,'missing_issues':['합성 검사 절차 누락'],'missing_facts':[], 'search_queries':['검사 서류 제출']}
+        return super().assess_evidence(question,evidence,missing_references,as_of)
     def answer(self, *args, **kwargs):
         import time
         time.sleep(.6)
+        if '추가 검색' in args[0]:
+            return '합성 테스트 추가 검색 답변 [1]'
         return super().answer(*args, **kwargs)
 
 app=create_app(Settings(data_dir=Path(mkdtemp(prefix='lawrag-management-'))),UIProvider(),UIAPI())

@@ -9,3 +9,6 @@ export function LawIcon() {
 export function HomeIcon() {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m3 10 9-7 9 7v10H3Z"/><path d="M9 20v-7h6v7"/></svg>;
 }
+export function SettingsIcon() {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9.5 3-.5 2-2 .9-1.8-.7-2 3.5 1.4 1.4v2.3l-1.4 1.4 2 3.5 1.8-.6 2 1 .5 2h4.1l.5-2 2-1 1.8.6 2-3.5-1.4-1.4v-2.3l1.4-1.4-2-3.5-1.8.7-2-.9-.5-2Z"/><circle cx="11.6" cy="11.6" r="3.2"/></svg>;
+}

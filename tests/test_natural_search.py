@@ -40,6 +40,8 @@ class SearchProvider:
     def rewrite_question(self, question):
         return TERMS
 
+    def assess_evidence(self, question, evidence, missing_references, as_of):
+        return {"sufficient":bool(evidence),"missing_issues":[],"missing_facts":[],"search_queries":[]}
     def filter_evidence(self, question, candidates):
         return candidates
 
@@ -86,7 +88,7 @@ def test_keyword_search_stays_offline(tmp_path):
 def test_chat_answers_unnamed_original_question_from_stored_evidence(tmp_path):
     provider = SearchProvider()
     answered = []
-    def answer(question, evidence, history, missing_references=None):
+    def answer(question, evidence, history, missing_references=None, assessment=None):
         answered.append(question)
         assert QUESTION in question and TERMS not in question
         assert evidence[0]['title'] == '보증금 중 일정액의 보호'

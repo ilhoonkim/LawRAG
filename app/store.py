@@ -268,6 +268,14 @@ class Store:
                 article['reference_titles'] = titles
         return expanded, missing
 
+    def search_enhanced(self, question, provider, **kwargs):
+        from .retrieval import search
+        return search(self, question, provider, **kwargs)
+
+    def expand_context(self, evidence, **kwargs):
+        from .graph import expand
+        return expand(self, evidence, **kwargs)
+
     def search(self, question, provider, threshold=.48, limit=5, mode='hybrid', as_of=None, title_weight=.35, min_title=.15, min_body=.20, query_variants=None):
         if not 0 <= threshold <= 1:
             raise ValueError('임계치는 0~1이어야 합니다.')

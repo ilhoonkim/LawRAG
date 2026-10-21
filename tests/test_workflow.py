@@ -17,9 +17,11 @@ class FakeProvider:
         return [[1., .1, 0.] if any(t in s for t in ['적용', '범위']) else [0., .1, 1.] for s in texts]
     def rewrite_question(self, question):
         return question
+    def assess_evidence(self, question, evidence, missing_references, as_of):
+        return {"sufficient":bool(evidence),"missing_issues":[],"missing_facts":[],"search_queries":[]}
     def filter_evidence(self, question, candidates):
         return candidates
-    def answer(self, question, evidence, history, missing_references=None):
+    def answer(self, question, evidence, history, missing_references=None, assessment=None):
         self.calls += 1
         assert evidence[0]['number'] == '제3조'
         return '테스트용 선박은 적용 제외 대상입니다. [1]'

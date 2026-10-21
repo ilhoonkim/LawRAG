@@ -21,6 +21,7 @@ class SearchRequest(BaseModel):
     mode: Literal['hybrid', 'keyword'] = 'hybrid'
     limit: int = Field(default=5, ge=1, le=10)
     as_of: date | None = None
+    fusion: Literal['weighted', 'rrf'] | None = None
 
 class Message(BaseModel):
     role: Literal['user', 'assistant']
@@ -69,7 +70,7 @@ def create_app(settings=None, provider=None, law_api=None):
     @app.get('/api/status')
     def status():
         return {'law_api_configured': bool(settings.law_oc), 'llm_configured': bool(settings.api_key),
-                'threshold': settings.threshold, 'chat_model': settings.chat_model, 'laws': store.list_laws()}
+                'threshold': settings.threshold, 'chat_model': settings.chat_model, 'search_fusion': settings.search_fusion, 'laws': store.list_laws()}
 
     @app.get('/api/laws/search')
     def find_laws(query: str = Query(min_length=2, max_length=100), page: int = Query(default=1, ge=1)):
@@ -97,6 +98,17 @@ def create_app(settings=None, provider=None, law_api=None):
     @app.post('/api/search')
     def search(body: SearchRequest):
         return retrieve(store, provider, settings, body)
+
+    @app.post('/api/search/compare')
+    def compare_search(body: SearchRequest):
+        from .temporal import resolve_date
+        cutoff, clarification = resolve_date(body.question, body.as_of)
+        if clarification:
+            return {'clarification':clarification,'weighted':[],'rrf':[]}
+        rewritten = provider.rewrite_question(body.question)
+        return store.search_enhanced(body.question,provider,variants=[rewritten],cutoff=cutoff,
+            threshold=settings.threshold if body.threshold is None else body.threshold,
+            limit=body.limit,mode=body.mode,compare=True)
 
     def chat_provider(body):
         return provider.for_model(body.model or settings.chat_model) if hasattr(provider, 'for_model') else provider
