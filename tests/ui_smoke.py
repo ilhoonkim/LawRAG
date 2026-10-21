@@ -36,7 +36,8 @@ try:
         raise RuntimeError('UI fixture server did not become ready')
     from playwright.sync_api import sync_playwright, expect
     with sync_playwright() as p:
-     browser=p.chromium.launch(executable_path=os.environ.get('CHROMIUM_EXECUTABLE') or shutil.which('chromium'),headless=True,args=['--no-sandbox'])
+     browser=p.chromium.launch(executable_path=os.environ.get('CHROMIUM_EXECUTABLE') or shutil.which('chromium'),headless=True,
+         args=['--no-sandbox','--no-proxy-server','--host-resolver-rules=MAP lawrag.test 127.0.0.1'])
      page=browser.new_page(viewport={'width':1480,'height':1000})
      errors=[];posts=[]
      page.on('pageerror',lambda e:errors.append(str(e)))
@@ -44,7 +45,8 @@ try:
      page.goto(base_url + '/#laws')
      expect(page.get_by_role('heading',name='법령 개정 연혁')).to_be_visible()
      page.evaluate('document.fonts.ready')
-     assert page.evaluate('(font) => document.fonts.check(font)', '12px "Noto Sans KR Variable"')
+     assert page.evaluate('(font) => document.fonts.check(font)', '12px "Pretendard Variable"')
+     assert 'Pretendard Variable' in page.locator('body').evaluate('(node) => getComputedStyle(node).fontFamily')
      expect(page.get_by_role('link',name='채팅',exact=True).locator('svg')).to_have_count(1)
      expect(page.get_by_role('navigation',name='법령 카테고리').get_by_role('button')).to_have_count(25)
      expect(page.get_by_role('navigation',name='행정규칙 카테고리').get_by_role('button')).to_have_count(2)
@@ -310,8 +312,44 @@ try:
      expect(page.get_by_role('button',name='전체 삭제',exact=True)).to_be_disabled()
      page.reload()
      expect(history.locator('.history-title')).to_have_count(0)
+
+     # Real non-localhost HTTP: browser crypto.randomUUID/clipboard APIs are
+     # unavailable. Two independent profiles must keep separate chat histories.
+     lan_url=f'http://lawrag.test:{port}/#chat'
+     profile_a,profile_b=browser.new_context(),browser.new_context()
+     user_a,user_b=profile_a.new_page(),profile_b.new_page()
+     for visitor in (user_a,user_b):
+         visitor.on('pageerror',lambda error:errors.append(str(error)))
+         visitor.goto(lan_url)
+         expect(visitor.locator('.welcome')).to_be_visible()
+         assert visitor.evaluate('window.isSecureContext') is False
+         assert visitor.evaluate('typeof crypto.randomUUID') == 'undefined'
+         expect(visitor.locator('#history .history-title')).to_have_count(0)
+     question_a='2020년 6월 1일 기준 선박안전법 적용 제외 사용자 A 질문'
+     question_b='2020년 6월 1일 기준 선박안전법 적용 제외 사용자 B 질문'
+     for visitor,question in ((user_a,question_a),(user_b,question_b)):
+         visitor.get_by_label('질문',exact=True).fill(question)
+         visitor.get_by_role('button',name='질문 전송',exact=True).click()
+         expect(visitor.locator('.message.assistant')).to_have_count(1,timeout=15000)
+         expect(visitor.locator('#history .history-title')).to_have_text(question)
+     user_a.bring_to_front()
+     user_a.get_by_role('button',name='답변 복사',exact=True).click()
+     expect(user_a.get_by_role('button',name='복사됨',exact=True)).to_be_visible()
+     data_a=user_a.evaluate('JSON.parse(localStorage.getItem("lawrag.chats"))')
+     data_b=user_b.evaluate('JSON.parse(localStorage.getItem("lawrag.chats"))')
+     assert data_a[0]['id'] != data_b[0]['id']
+     assert re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}',data_a[0]['id'])
+     assert question_b not in json.dumps(data_a,ensure_ascii=False)
+     assert question_a not in json.dumps(data_b,ensure_ascii=False)
+     user_a.once('dialog',lambda dialog:dialog.accept())
+     user_a.get_by_role('button',name='전체 삭제',exact=True).click()
+     expect(user_a.locator('#history .history-title')).to_have_count(0)
+     user_b.reload()
+     expect(user_b.locator('#history .history-title')).to_have_text(question_b)
+     profile_a.close()
+     profile_b.close()
      assert not errors,errors
-     print('PASS React: categories, collection, history, article popup, chat stages, model/settings, grouped sources, Markdown/CJK emphasis/tables, safe content rendering, clickable citations and focus, mobile layout, individual chat deletion/cancel/persistence, zero JS errors')
+     print('PASS React: categories, collection, history, article popup, chat stages, model/settings, grouped sources, Markdown/CJK emphasis/tables, safe content rendering, clickable citations and focus, mobile layout, individual chat deletion/cancel/persistence, Pretendard, LAN HTTP chat/copy, independent browser profiles, zero JS errors')
      browser.close()
 
     print('Screenshots:', artifacts)

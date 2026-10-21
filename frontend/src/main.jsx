@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import Chat from './Chat';
 import LawManagement from './LawManagement';
 import { api, Modal } from './shared';
-import '@fontsource-variable/noto-sans-kr';
+import 'pretendard/dist/web/variable/pretendardvariable.css';
 import { ChatIcon, LawIcon, HomeIcon } from './Icons';
 import './style.css';
 

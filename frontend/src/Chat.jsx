@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { api, streamChat, dateText } from './shared';
+import { api, streamChat, dateText, createChatId, copyText } from './shared';
 import SearchSettings from './SearchSettings';
 import { JusticeIcon, ProcessingIcon, TrashIcon } from './Icons';
 import AnswerMarkdown from './AnswerMarkdown';
@@ -65,8 +65,8 @@ export default function Chat({ visible, status, onSource }) {
     e.preventDefault();
     const value = question.trim();
     if (value.length < 2 || busyRef.current) return;
+    const id = active || createChatId();
     busyRef.current = true; setBusy(true); setStage(null); setSourceGroup(null);
-    const id = active || crypto.randomUUID();
     const history = messages.filter(m => ['user','assistant'].includes(m.role)).slice(-6).map(m => ({ role: m.role, content: m.content.slice(0,6000) }));
     setChats(prev => active ? prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'user', content: value }] } : c) : [{ id, title: value, messages: [{ role: 'user', content: value }] }, ...prev].slice(0,30));
     setActive(id); setQuestion('');
@@ -78,7 +78,7 @@ export default function Chat({ visible, status, onSource }) {
       setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'error', content: error.message }] } : c));
     } finally { busyRef.current = false; setBusy(false); }
   }
-  async function copy(text, index) { try { await navigator.clipboard.writeText(text); setCopied(index); } catch { setCopied('error'); } }
+  async function copy(text, index) { try { await copyText(text); setCopied(index); } catch { setCopied('error'); } }
   function openSources(group, messageIndex, trigger, citation = null) {
     sourceTriggerRef.current = trigger;
     setSourceGroup({ ...group, messageIndex, citation });

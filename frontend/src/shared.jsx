@@ -1,5 +1,34 @@
 import React, { useEffect, useRef } from 'react';
 
+export function createChatId() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  // randomUUID needs HTTPS/localhost; getRandomValues also works on LAN HTTP.
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+}
+
+export async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(text); return; } catch { /* Try the HTTP-compatible path. */ }
+  }
+  const previousFocus = document.activeElement;
+  const field = document.createElement('textarea');
+  field.value = text;
+  field.readOnly = true;
+  field.style.cssText = 'position:fixed;left:0;top:0;opacity:0;pointer-events:none';
+  document.body.appendChild(field);
+  try {
+    field.select();
+    if (!document.execCommand('copy')) throw new Error('복사 권한을 확인하세요.');
+  } finally {
+    field.remove();
+    previousFocus?.focus({ preventScroll: true });
+  }
+}
+
 export async function api(path, body, options = {}) {
   const response = await fetch(path, body === undefined ? options : {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), ...options
