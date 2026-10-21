@@ -162,6 +162,10 @@ class Provider:
         from .evidence_review import filter_evidence
         return filter_evidence(self,question,candidates)
 
+    def generate_search_metadata(self, documents):
+        from .search_metadata import generate
+        return generate(self, documents)
+
     def assess_evidence(self, question, evidence, missing_references, as_of):
         documents = [{"id":i, **{k:e.get(k,'') for k in ('law_name','number','title','body','effective','evidence_role','application_conditions')}}
                      for i,e in enumerate(evidence,1)]

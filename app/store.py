@@ -76,6 +76,17 @@ class Store:
                 version TEXT REFERENCES law_versions(version), position INTEGER, number TEXT, title TEXT,
                 body TEXT, section_id TEXT, chapter TEXT, vector BLOB, model TEXT,
                 PRIMARY KEY(version, position));
+              CREATE TABLE IF NOT EXISTS search_metadata (
+                key TEXT PRIMARY KEY, source_hash TEXT, generator_model TEXT, prompt_version TEXT,
+                summary TEXT, questions TEXT, created_at TEXT);
+              CREATE TABLE IF NOT EXISTS search_metadata_vectors (
+                metadata_key TEXT REFERENCES search_metadata(key), field TEXT, ordinal INTEGER,
+                text TEXT, vector BLOB, model TEXT,
+                PRIMARY KEY(metadata_key,field,ordinal,model));
+              CREATE TABLE IF NOT EXISTS article_metadata (
+                version TEXT, position INTEGER, metadata_key TEXT REFERENCES search_metadata(key),
+                status TEXT, error TEXT, updated_at TEXT, PRIMARY KEY(version,position),
+                FOREIGN KEY(version,position) REFERENCES version_articles(version,position) ON DELETE CASCADE);
               INSERT OR IGNORE INTO law_versions
                 SELECT version, id, name, 'law', '', '', effective, '', html, source_url FROM laws;
               INSERT OR IGNORE INTO version_articles(version,position,number,title,body,section_id,chapter,vector,model)
@@ -127,6 +138,11 @@ class Store:
             raise SetupError('임베딩 모델이 기존 DB와 다릅니다. 별도 DATA_DIR로 전체 법령을 재색인하세요.')
         texts = [body_text({'body': a.body}) for a in law.articles]
         titles = [f'{law.name} - {a.number}({a.title})' for a in law.articles]
+        metadata_keys = []
+        if not keyword_only and callable(getattr(provider, 'generate_search_metadata', None)):
+            from .search_metadata import prepare
+            documents = [{'law_name':law.name, 'number':a.number, 'title':a.title, 'body':a.body} for a in law.articles]
+            metadata_keys = prepare(self,provider,documents)
         embeddings = [None] * (2*len(texts)) if keyword_only else provider.embed(texts + titles)
         if len(embeddings) != 2*len(texts):
             raise ValueError('임베딩 개수가 조문 제목·본문 입력 개수와 다릅니다.')
@@ -150,6 +166,10 @@ class Store:
                 for i, a, v, model in packed])
             db.executemany('UPDATE version_articles SET title_vector=? WHERE version=? AND position=?',
                 [(sqlite_vec.serialize_float32(v) if v is not None else None, law.version, i) for i,v in enumerate(title_vectors)])
+            if metadata_keys:
+                from .search_metadata import bind
+                for i,key in enumerate(metadata_keys):
+                    bind(db,law.version,i,key)
             db.execute('DELETE FROM annex_nodes WHERE version=?', (law.version,))
             db.execute('DELETE FROM article_references WHERE version=?', (law.version,))
             db.executemany('INSERT INTO annex_nodes VALUES(?,?,?,?,?,?)',
@@ -165,6 +185,7 @@ class Store:
             if not archive_only or active:
                 self._activate(db, law.version)
         return {'name': law.name, 'articles': len(law.articles), 'version': law.version,
+                'metadata_articles': len(metadata_keys),
                 'mode': 'keyword' if keyword_only else 'hybrid', 'html_url': '/documents/' + filename}
 
     def _activate(self, db, version):
@@ -229,7 +250,9 @@ class Store:
         with self.connect() as db:
             for law in selected:
                 count = db.execute('SELECT count(*),count(vector) FROM version_articles WHERE version=?', (law['version'],)).fetchone()
-                result.append({**law, 'id': law['law_id'], 'article_count': count[0], 'embedded_count': count[1]})
+                metadata_count = db.execute("SELECT count(*) FROM article_metadata WHERE version=? AND status='completed'", (law['version'],)).fetchone()[0]
+                result.append({**law, 'id': law['law_id'], 'article_count': count[0], 'embedded_count': count[1],
+                               'metadata_count':metadata_count})
         return sorted(result, key=lambda r: r['name'])
 
     def expand_references(self, evidence):

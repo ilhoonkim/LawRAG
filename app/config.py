@@ -23,6 +23,7 @@ class Settings:
     api_key: str = os.getenv('LLM_API_KEY', '') or os.getenv('OPENAI_API_KEY', '')
     base_url: str = os.getenv('LLM_BASE_URL', 'https://api.openai.com/v1')
     embedding_model: str = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-large')
+    metadata_model: str = os.getenv('METADATA_MODEL', 'gpt-4o-mini')
     chat_model: str = os.getenv('CHAT_MODEL', 'gpt-4.1')
     rerank_model: str = os.getenv('RERANK_MODEL', '')
     candidate_limit: int = int(os.getenv('SEARCH_CANDIDATE_LIMIT', '15'))

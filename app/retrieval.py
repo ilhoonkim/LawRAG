@@ -4,6 +4,7 @@ from urllib.parse import quote
 import sqlite_vec
 from .laws import SetupError
 from .store import grams, body_text, expanded_query
+from .search_metadata import load as load_metadata, source_hash
 
 
 def fragments(body):
@@ -46,15 +47,16 @@ def fuse(rankings, constant=60):
     return scores
 
 
-def field_rrf(per_query, mode, exact_ids=(), constant=60, depth=50):
+def field_rrf(per_query, mode, exact_ids=(), constant=60, depth=50, metadata_fields=()):
     """Fuse query/retriever ranks within each field, then fuse the two fields.
 
     A rewrite adds a retrieval path, not another vote at the final field level.
-    Missing field hits contribute zero; the maximum stays 2 / (constant + 1).
+    Missing field hits contribute zero; the maximum is field_count / (constant + 1).
     Original explicit law/article identifiers are pinned in each field instead
     of being counted as a third, unrelated RRF dimension.
     """
     fields = {'title': ('title', 'title_semantic'), 'body': ('lexical', 'semantic')}
+    fields.update({field:(field+'_keyword', field+'_semantic') for field in metadata_fields})
     rankings, ranks = [], {}
     for field, signals in fields.items():
         lists = []
@@ -70,6 +72,33 @@ def field_rrf(per_query, mode, exact_ids=(), constant=60, depth=50):
     return fuse(rankings, constant), ranks
 
 
+def metadata_scores(db, metadata, query, vector):
+    scores = {'summary':0., 'questions':0., 'summary_keyword':0., 'summary_semantic':0.,
+              'questions_keyword':0., 'questions_semantic':0., 'matched_metadata':None}
+    best = 0.
+    for piece in metadata.get('pieces',[]):
+        field = 'questions' if piece['field'] == 'question' else 'summary'
+        lexical = overlap(query,piece['text'],True)
+        semantic = 0.
+        compatible = vector and piece['vector'] and len(piece['vector']) == len(vector)
+        if compatible:
+            semantic = max(0.,min(1.,db.execute('SELECT 1-vec_distance_cosine(?,?)',
+                (piece['vector'],vector)).fetchone()[0]))
+        # Either retrieval channel may discover a parent. Averaging a good
+        # semantic match with near-zero literal overlap recreates the original
+        # vocabulary gate. RRF combines their ranks later; the LLM checks source.
+        value = max(semantic,lexical)
+        # Multiple generated questions are alternate paths to ONE parent, not
+        # separate documents/votes. Duplicating questions cannot raise its score.
+        scores[field] = max(scores[field],value)
+        scores[field+'_keyword'] = max(scores[field+'_keyword'],lexical)
+        scores[field+'_semantic'] = max(scores[field+'_semantic'],semantic)
+        if value > best:
+            best = value
+            scores['matched_metadata'] = {'field':field,'text':piece['text']}
+    return scores
+
+
 def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48,
            limit=20, mode='hybrid', fusion='weighted', compare=False):
     if fusion not in ('weighted','rrf') or not 0 <= threshold <= 1:
@@ -82,12 +111,20 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
     rows = []
     with store.connect() as db:
         for law in selected:
+            metadata = load_metadata(db,law['version'],provider.fingerprint)
             for r in db.execute('SELECT * FROM version_articles WHERE version=? ORDER BY position',(law['version'],)):
-                rows.append({**dict(r), 'law_name':law['name'], 'law_id':law['law_id'],
+                row = {**dict(r), 'law_name':law['name'], 'law_id':law['law_id'],
                              'effective':law['effective'], 'promulgated':law['promulgated'],
-                             'source_url':law['source_url'], 'id':law['version']+':'+str(r['position'])})
+                             'source_url':law['source_url'], 'id':law['version']+':'+str(r['position'])}
+                item = metadata.get(r['position'])
+                row['_metadata'] = item if item and item['source_hash']==source_hash(row) else {}
+                rows.append(row)
         if not rows:
             return {'weighted':[], 'rrf':[], **fusion_metadata} if compare else []
+        metadata_fields = [field for field in ('summary','questions') if any(r['_metadata'].get(field) for r in rows)]
+        fusion_metadata['rrf_fields'] += metadata_fields
+        fusion_metadata['rrf_max_score'] = len(fusion_metadata['rrf_fields'])/61
+        fusion_metadata['metadata_articles'] = sum(bool(r['_metadata']) for r in rows)
         if mode == 'hybrid':
             if any(r['model'] != provider.fingerprint or r['vector'] is None or r['title_vector'] is None for r in rows):
                 raise SetupError('제목·본문 벡터가 없거나 임베딩 모델이 다릅니다. 저장 자료를 재임베딩하거나 키워드 검색을 선택하세요.')
@@ -125,28 +162,34 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
                 quality = min(1., .80*content + .20*title + .03*law)
                 if exact:
                     quality = max(quality,.95)
+                meta = metadata_scores(db,row['_metadata'],clean,vector)
+                metadata_quality = max(meta['summary'],meta['questions'])
+                original_eligible = quality >= threshold and (exact or content >= .20)
+                metadata_eligible = bool(meta['matched_metadata']) and metadata_quality >= threshold
+                combined = max(quality if original_eligible else 0., metadata_quality if metadata_eligible else 0.)
                 scored.append({'row':row, 'quality':quality,
                     'semantic':semantic, 'title':title, 'title_semantic':title_semantic,
                     'body':content, 'lexical':lexical,
-                    'law':law, 'exact':bool(exact), 'query':query,
+                    'law':law, 'exact':bool(exact), 'query':query, **meta,
+                    'combined_quality':combined, 'metadata_quality':metadata_quality,
+                    'original_eligible':original_eligible, 'metadata_eligible':metadata_eligible,
                     'matches':[{k:m[k] for k in ('location','text','start','end')} for m in matches[:3] if m['score'] > 0]})
             per_query.append(scored)
     exact_ids = [s['row']['id'] for s in per_query[0] if s['exact']]
-    rrf, field_ranks = field_rrf(per_query, mode, exact_ids)
+    rrf, field_ranks = field_rrf(per_query, mode, exact_ids, metadata_fields=metadata_fields)
     normalizer = fusion_metadata['rrf_max_score']
     result = []
     for i,row in enumerate(rows):
         observations = [scores[i] for scores in per_query]
-        best = max(observations,key=lambda s:s['quality'])
-        # A title/law-name hit alone cannot qualify; RRF never bypasses this gate.
-        if not best['exact'] and (best['body'] < .20 or best['quality'] < threshold):
-            continue
-        if best['quality'] < threshold:
+        best = max(observations,key=lambda s:s['combined_quality'])
+        # Metadata can discover an otherwise missed parent. The verifier still
+        # receives only its original full text, never generated search material.
+        if not best['original_eligible'] and not best['metadata_eligible']:
             continue
         if row['id'] not in rrf:
             continue
-        out = {k:v for k,v in row.items() if k not in ('vector','title_vector','model')}
-        out.update(score=round(best['quality'],4), weighted_score=round(best['quality'],4),
+        out = {k:v for k,v in row.items() if k not in ('vector','title_vector','model','_metadata')}
+        out.update(score=round(best['combined_quality'],4), weighted_score=round(best['combined_quality'],4),
             rrf_score=round(rrf.get(row['id'],0.)/normalizer,6), title_score=round(best['title'],4),
             body_score=round(best['body'],4), law_name_score=best['law'],
             body_keyword_score=round(best['lexical'],4), body_semantic_score=round(best['semantic'],4),
@@ -154,8 +197,14 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
             title_semantic_score=round(best['title_semantic'],4),
             rrf_raw_score=rrf[row['id']], rrf_max_score=normalizer,
             rrf_field_ranks={field:ranks.get(row['id']) for field,ranks in field_ranks.items()},
+            source_weighted_score=round(best['quality'],4), metadata_score=round(best['metadata_quality'],4),
+            summary_score=round(best['summary'],4), questions_score=round(best['questions'],4),
+            metadata_field_scores={key:round(best[key],4) for key in (
+                'summary_keyword','summary_semantic','questions_keyword','questions_semantic')},
+            matched_metadata=best['matched_metadata'],
+            retrieval_route='metadata' if not best['original_eligible'] else 'source',
             matched_query=best['query'], matched_units=best['matches'], context_restored=True,
-            retrieval_queries=[s['query'] for s in observations if s['quality'] >= threshold],
+            retrieval_queries=[s['query'] for s in observations if s['original_eligible'] or s['metadata_eligible']],
             html_url='/documents/'+row['version']+'.html#'+quote(row['section_id'],safe=''))
         result.append(out)
     def ranked(method):

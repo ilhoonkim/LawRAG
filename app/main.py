@@ -70,7 +70,8 @@ def create_app(settings=None, provider=None, law_api=None):
     @app.get('/api/status')
     def status():
         return {'law_api_configured': bool(settings.law_oc), 'llm_configured': bool(settings.api_key),
-                'threshold': settings.threshold, 'chat_model': settings.chat_model, 'search_fusion': settings.search_fusion, 'laws': store.list_laws()}
+                'threshold': settings.threshold, 'chat_model': settings.chat_model, 'metadata_model':settings.metadata_model,
+                'search_fusion': settings.search_fusion, 'laws': store.list_laws()}
 
     @app.get('/api/laws/search')
     def find_laws(query: str = Query(min_length=2, max_length=100), page: int = Query(default=1, ge=1)):
