@@ -26,13 +26,27 @@ body{display:block}#root{display:grid;grid-template-columns:84px minmax(0,1fr);h
 #history .history-delete:hover:not(:disabled){color:#c34848;background:#fff0ef}
 #history .history-delete svg{width:16px;height:16px}
 .message.user{margin-right:0;margin-left:auto}
-.pipeline-progress{width:100%;color:#708494;font-size:12px}
-.pipeline-progress ol{display:flex;flex-wrap:wrap;gap:12px 18px;padding:0;list-style:none}
-.pipeline-progress li{display:flex;align-items:center;gap:7px;color:#8d9ba8}
-.pipeline-progress li.current{color:#246bf2;font-weight:600}
-.pipeline-progress li.done{color:#4b7881}
-.step-mark{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:#fff;border:1px solid #dbe5ed;font-size:11px}
-.current .step-mark{border-color:#246bf2;background:#e8f0ff}
+.pipeline-progress{width:100%;color:#425568;font-size:13px}
+.pipeline-progress .current{display:flex;align-items:center;gap:10px;margin:0;font-weight:500;min-height:26px}
+.stage-activity-icon{display:flex;flex:0 0 22px;width:22px;animation:stage-float 1.8s ease-in-out infinite}
+.stage-activity-icon svg{width:22px;height:24px}
+.answer-skeleton{padding-top:26px;max-width:100%}
+.skeleton-preview,.skeleton-paragraph{display:grid;gap:14px}
+.skeleton-paragraph{margin-top:42px}
+.skeleton-line{display:block;position:relative;overflow:hidden;height:11px;border-radius:5px;background:#e1e7edb3}
+.skeleton-preview .skeleton-line:nth-child(1){width:36%;min-width:100px;max-width:320px}
+.skeleton-preview .skeleton-line:nth-child(2){width:19%;min-width:65px;max-width:170px}
+.skeleton-preview .skeleton-line:nth-child(3){width:30px;opacity:.55}
+.skeleton-paragraph .skeleton-line:first-child{width:96%}
+.skeleton-line::after{content:'';position:absolute;inset:0;background:linear-gradient(105deg,transparent 15%,#fff9 50%,transparent 85%);transform:translateX(-100%);animation:skeleton-shimmer 1.8s ease-in-out infinite}
+.skeleton-preview .skeleton-line:nth-child(2)::after{animation-delay:.15s}
+.skeleton-preview .skeleton-line:nth-child(3)::after{animation-delay:.3s}
+.skeleton-paragraph .skeleton-line::after{animation-delay:.45s}
+.skeleton-line.writing{width:85%;animation:skeleton-write 3.6s ease-in-out infinite}
+@keyframes stage-float{0%,100%{transform:translateY(0);opacity:.75}50%{transform:translateY(-3px);opacity:1}}
+@keyframes skeleton-shimmer{to{transform:translateX(100%)}}
+@keyframes skeleton-write{0%,10%{width:32%}75%,100%{width:85%}}
+@media(prefers-reduced-motion:reduce){.stage-activity-icon,.skeleton-line.writing,.skeleton-line::after{animation:none}.skeleton-line::after{display:none}}
 .model-picker{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:#6a7f91}
 .model-picker select{max-width:230px;color:#334b62;border:1px solid #e1e8ef;border-radius:6px;padding:5px 8px;background:#fff}
 .model-picker input{max-width:190px;min-width:0;padding:5px 8px;border:1px solid #e1e8ef;border-radius:6px}
@@ -73,7 +87,7 @@ body{display:block}#root{display:grid;grid-template-columns:84px minmax(0,1fr);h
 .markdown-body .citation-link{display:inline-flex;align-items:center;padding:1px 5px;margin:0 2px;border:1px solid #cbddeb;border-radius:5px;background:#ffffffa6;color:#326aa0;font-size:.75em;line-height:1.4;vertical-align:1px;white-space:nowrap}
 .markdown-body .citation-link:hover{background:#e1eefc;border-color:#729acf;color:#1c5691}
 @media(max-width:1250px){.chat-page,.chat-page.has-sources{--chat-history-width:240px;grid-template-columns:var(--chat-history-width) minmax(0,1fr)}.chat-page .sources{position:absolute;right:0;top:0;bottom:0;width:min(320px,90%);z-index:5;box-shadow:-8px 0 24px #16374b20}}
-@media(max-width:850px){.chat-page,.chat-page.has-sources{grid-template-columns:minmax(0,1fr)}.chat-page .sidebar{display:none}.model-picker small{flex-basis:100%}.pipeline-progress ol{flex-direction:column;gap:8px}}
+@media(max-width:850px){.chat-page,.chat-page.has-sources{grid-template-columns:minmax(0,1fr)}.chat-page .sidebar{display:none}.model-picker small{flex-basis:100%}}
 
 .chat-header-actions{display:flex;align-items:center;gap:12px;min-width:0}
 .chat-settings{position:relative;flex-shrink:0}

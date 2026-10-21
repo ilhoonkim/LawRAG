@@ -1,5 +1,8 @@
 import React from 'react';
 
+export function ProcessingIcon() {
+  return <svg viewBox="0 0 24 26" fill="none" aria-hidden="true"><path d="m12 6 11 9-11 9L1 15Z" fill="#c8e5ff"/><path d="m12 2 11 9-11 9L1 11Z" fill="#83c1ff"/></svg>;
+}
 export function ChatIcon() {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20.5 11.5a8.5 8.5 0 0 1-8.5 8.5 9 9 0 0 1-3.6-.8L3 21l1.7-5.1A8.5 8.5 0 1 1 20.5 11.5Z"/><path d="M8 9h8M8 13h5"/></svg>;
 }

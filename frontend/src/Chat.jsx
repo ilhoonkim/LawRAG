@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, streamChat, dateText } from './shared';
 import SearchSettings from './SearchSettings';
-import { JusticeIcon, TrashIcon } from './Icons';
+import { JusticeIcon, ProcessingIcon, TrashIcon } from './Icons';
 import AnswerMarkdown from './AnswerMarkdown';
 
 function readChats() {
@@ -10,10 +10,11 @@ function readChats() {
     return Array.isArray(data) ? data.filter(c => typeof c.id === 'string' && typeof c.title === 'string' && Array.isArray(c.messages)).map(c => ({ ...c, messages: c.messages.filter(m => typeof m.content === 'string') })).slice(0,30) : [];
   } catch { return []; }
 }
-const stages = [
-  ['rewrite', '질문 재조정 중'], ['search', '관련 법조항 검색 중'],
-  ['review', '법조항 후보군 검토 중'], ['assess', '근거 충분성 확인 중'], ['answer', '근거 법조항 기반 답변 생성 중']
-];
+const stageLabels = {
+  rewrite: '질문 재조정 중', search: '관련 법조항 검색 중',
+  review: '법조항 후보군 검토 중', assess: '근거 충분성 확인 중',
+  additional_search: '부족한 근거 추가 검색 중', answer: '근거 법조항 기반 답변 생성 중'
+};
 function groupedSources(evidence = []) {
   const groups = new Map();
   evidence.forEach((item, i) => {
@@ -32,10 +33,8 @@ export default function Chat({ visible, status, onSource }) {
   const [mode, setMode] = useState('hybrid');
   const [threshold, setThreshold] = useState(.48);
   const [busy, setBusy] = useState(false);
-  const [stageHistory, setStageHistory] = useState([]);
+  const [stage, setStage] = useState(null);
   const [fusion, setFusion] = useState('weighted');
-  const stage = stageHistory.at(-1);
-  const progressSteps = [...stageHistory.map(key => [key, key === 'additional_search' ? '부족한 근거 추가 검색 중' : stages.find(([id]) => id === key)?.[1] || key]), ...stages.filter(([key]) => !stageHistory.includes(key))];
   const [sourceGroup, setSourceGroup] = useState(null);
   const [model, setModel] = useState('');
   const [customModel, setCustomModel] = useState('');
@@ -66,14 +65,14 @@ export default function Chat({ visible, status, onSource }) {
     e.preventDefault();
     const value = question.trim();
     if (value.length < 2 || busyRef.current) return;
-    busyRef.current = true; setBusy(true); setStageHistory([]); setSourceGroup(null);
+    busyRef.current = true; setBusy(true); setStage(null); setSourceGroup(null);
     const id = active || crypto.randomUUID();
     const history = messages.filter(m => ['user','assistant'].includes(m.role)).slice(-6).map(m => ({ role: m.role, content: m.content.slice(0,6000) }));
     setChats(prev => active ? prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'user', content: value }] } : c) : [{ id, title: value, messages: [{ role: 'user', content: value }] }, ...prev].slice(0,30));
     setActive(id); setQuestion('');
     try {
       const selectedModel = model === 'custom' ? customModel.trim() : (model || status?.chat_model);
-      const result = await streamChat({ question: value, mode, threshold: Number(threshold), history, fusion, model: selectedModel || undefined }, key => setStageHistory(prev => [...prev,key]));
+      const result = await streamChat({ question: value, mode, threshold: Number(threshold), history, fusion, model: selectedModel || undefined }, setStage);
       setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'assistant', content: result.answer, evidence: result.evidence, as_of: result.as_of, model: selectedModel, missing_facts: result.assessment?.missing_facts, additional_search_rounds: result.additional_search_rounds }] } : c));
     } catch (error) {
       setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'error', content: error.message }] } : c));
@@ -121,13 +120,12 @@ export default function Chat({ visible, status, onSource }) {
           {m.evidence?.some(item => !item.relation) && <div className="evidence-chips">{groupedSources(m.evidence).map(group => <button key={group.name} aria-label={`${group.name} 근거 ${group.items.length}개 보기`} aria-expanded={sourceGroup?.messageIndex === i && sourceGroup?.name === group.name} onClick={event => openSources(group, i, event.currentTarget)}><JusticeIcon />{group.name} <span>{group.items.length}</span></button>)}</div>}
           {m.role === 'assistant' && <button className="copy-button" onClick={() => copy(m.content,i)}>{copied === i ? '복사됨' : copied === 'error' ? '복사 권한을 확인하세요' : '답변 복사'}</button>}
         </article>)}
-        {busy && <div className="message pipeline-progress" role="status" aria-label="답변 처리 단계">
-          {!stage && <p>서버 연결 중…</p>}
-          <ol>{progressSteps.map(([key,label], i) => {
-            const currentIndex = stageHistory.length - 1;
-            const state = i < currentIndex ? 'done' : i === currentIndex ? 'current' : 'waiting';
-            return <li key={`${key}-${i}`} className={state} aria-current={state === 'current' ? 'step' : undefined}><span className="step-mark">{state === 'done' ? '✓' : i+1}</span>{label}</li>;
-          })}</ol>
+        {busy && <div className="message pipeline-progress" role="status" aria-label="답변 처리 단계" aria-atomic="true">
+          <p className="current"><span className="stage-activity-icon"><ProcessingIcon /></span><span>{stage ? stageLabels[stage] || '답변 처리 중' : '서버 연결 중…'}</span></p>
+          <div className="answer-skeleton" aria-hidden="true">
+            <div className="skeleton-preview"><span className="skeleton-line" /><span className="skeleton-line" /><span className="skeleton-line" /></div>
+            <div className="skeleton-paragraph"><span className="skeleton-line" /><span className="skeleton-line writing" /></div>
+          </div>
         </div>}
       </div>
       <div className="composer-area"><form id="chat-form" onSubmit={send}>

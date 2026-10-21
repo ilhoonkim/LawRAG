@@ -23,6 +23,11 @@ class UIAPI(FakeAPI):
             return version(f'{2010+n}0101',f'{2009+n}1201',mst)
         return super().fetch(mst,kind)
 class UIProvider(FakeProvider):
+    def embed(self, texts):
+        import time
+        # Simulate network latency so the current-only search stage is observable.
+        time.sleep(.5)
+        return super().embed(texts)
     def rewrite_question(self, question):
         import time
         time.sleep(.6)
