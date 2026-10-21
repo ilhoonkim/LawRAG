@@ -29,6 +29,15 @@ from urllib.parse import quote, urljoin, urlsplit
 import xml.etree.ElementTree as ET
 
 
+# 숫자 있는 별표뿐 아니라 '별표와 같다', '[별표]' 같은 번호 없는 참조도 찾습니다.
+# 한국어 단어 중간의 '특별표'나 '별표준'을 참조로 잘못 잡지 않도록 경계를 확인합니다.
+HTML_REFERENCE_PATTERN = re.compile(
+    r'제\s*(\d+)\s*조(?:\s*의\s*(\d+))?'
+    r'|(?<![가-힣A-Za-z0-9_])별표(?:\s*(\d+)(?:\s*의\s*(\d+))?'
+    r'|(?=$|[\s\]\)」】.,;:!?]|(?:와|과|에|의|를|는|은|가|로)(?=\s|$)))'
+)
+
+
 # 읽는 순서: xml_to_html → parse_law_xml/parse_annexes → render_html
 # → link_article_references → reference_target.
 # 파싱 단계에서는 원문 텍스트를 유지하고, 출력 단계에서만 링크를 붙입니다.
@@ -142,6 +151,8 @@ def parse_annexes(root: ET.Element, law_name: str) -> list[Annex]:
             continue
         # 별표1/별표 01 등의 본문 표현이 동일한 키 '별표 1'에 대응하도록 정규화합니다.
         # '별표 1의2'는 '별표 1'과 별개의 대상입니다.
+        # 0은 번호 없는 별표의 내부 매핑 키입니다. 표시할 때만 '별표'로 바꾸어
+        # 기존 HTML의 별표0 앵커와 연결 호환성을 유지합니다.
         number = f'별표 {int(num)}' + (f'의{int(branch)}' if branch.isdigit() and int(branch) else '')
         if number in seen:
             raise ValueError(f'중복 별표입니다: {number}')
@@ -194,6 +205,12 @@ def reference_target(body: str, position: int, own_law: str) -> str:
     return own_law
 
 
+def reference_heading(number: str, title: str) -> str:
+    """번호 없는 별표의 API 키(별표 0)를 화면에서는 별표로 표시합니다."""
+    display = '별표' if number == '별표 0' else number
+    return display + (f'({title})' if title and title not in (number, display) else '')
+
+
 def link_article_references(article: Article, law_name: str, by_number: dict[str, Article]) -> str:
     """본문의 조 번호와 모든 별표 번호(가지번호 포함)에 내부 이동 링크를 붙입니다."""
     # by_number 예: {'제6조': Article(...), '별표 2': Annex(...)}.
@@ -202,17 +219,21 @@ def link_article_references(article: Article, law_name: str, by_number: dict[str
     parts, cursor = [], 0
     # 정규식 그룹 1/2는 조 번호/가지번호, 3/4는 별표 번호/가지번호입니다.
     # 명시적으로 적힌 참조만 변환하며 '별표 1~3'의 생략된 2·3을 새로 만들어 넣지는 않습니다.
-    for match in re.finditer(r'제\s*(\d+)\s*조(?:\s*의\s*(\d+))?|별표\s*(\d+)(?:\s*의\s*(\d+))?', article.body):
+    for match in HTML_REFERENCE_PATTERN.finditer(article.body):
         # 외부 원문은 반드시 escape합니다. 코드가 직접 만든 <a> 태그만 HTML로 삽입합니다.
         parts.append(html.escape(article.body[cursor:match.start()]))
         if match[3]:
             number = f'별표 {int(match[3])}' + (f'의{int(match[4])}' if match[4] else '')
-        else:
+        elif match[1]:
             number = f'제{int(match[1])}조' + (f'의{int(match[2])}' if match[2] else '')
+        else:
+            # 번호가 생략된 참조는 실제 번호 없는 별표(0)가 있을 때만 연결합니다.
+            # 번호 있는 별표 중 첫 번째 것을 추측해서 선택하지 않습니다.
+            number = '별표 0'
         target = by_number.get(number) if reference_target(article.body, match.start(), law_name) == law_name else None
         # 같은 XML에 대상과 제목이 있어야 연결합니다. 자기 자신이나 미수집 대상은 그대로 둡니다.
         if target and target.title and number != article.number:
-            label = html.escape(number + (f'({target.title})' if target.title != number else ''))
+            label = html.escape(reference_heading(number, target.title))
             # href의 # 뒤는 URL 인코딩하고, 목적지 section의 id는 HTML 속성 이스케이프합니다.
             # 브라우저가 fragment를 해석해 같은 문서 내 해당 section으로 이동합니다.
             parts.append(f'<a href="#{quote(target.section_id, safe="")}">{label}</a>')
@@ -231,7 +252,7 @@ def render_html(law: Law) -> str:
     toc, sections = [], []
     for article in [*law.articles, *law.annexes]:
         # 목차와 본문 링크가 같은 section_id를 사용해야 두 경로 모두 같은 위치로 이동합니다.
-        heading = html.escape(article.number + (f'({article.title})' if article.title and article.title != article.number else ''))
+        heading = html.escape(reference_heading(article.number, article.title))
         toc.append(f'<a href="#{quote(article.section_id, safe="")}">{heading}</a>')
         body = link_article_references(article, law.name, by_number)
         extra = ''

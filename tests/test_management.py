@@ -232,7 +232,7 @@ def test_archived_html_viewer_upgrades_without_api_or_embeddings(tmp_path):
     original=version('20200101','20191201')
     saved=store.ingest(original,FakeProvider(),mst='102',archive_only=True)
     html_path=tmp_path/'html'/(saved['version']+'.html')
-    html_path.write_text('<html data-viewer-version="2">Legacy viewer</html>',encoding='utf-8')
+    html_path.write_text('<html data-viewer-version="3">Legacy viewer</html>',encoding='utf-8')
     class NoNetwork:
         def __getattr__(self,name):
             raise AssertionError('No network/model call allowed for archived document viewing')
@@ -240,7 +240,7 @@ def test_archived_html_viewer_upgrades_without_api_or_embeddings(tmp_path):
     with TestClient(app) as client:
         response=client.get('/documents/'+html_path.name)
         assert response.status_code==200
-        assert 'data-viewer-version="3"' in response.text
+        assert 'data-viewer-version="4"' in response.text
         assert '[시행 2020.01.01]' in response.text
         assert 'id="선박안전법-제3조"' in response.text
         assert 'aria-label="조문 목차"' in response.text

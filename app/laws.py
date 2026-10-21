@@ -117,7 +117,22 @@ def parse_law(raw: bytes) -> Law:
 
 
 VIEWER_CSS = Path(__file__).with_name("document_viewer.css").read_text(encoding="utf-8")
-VIEWER_VERSION = '3'
+VIEWER_VERSION = '4'
+
+# 숫자 있는 별표를 먼저 찾고, 독립적으로 쓰인 '별표', '[별표]', '별표와'도 찾습니다.
+# '특별표', '별표준' 같은 단어 일부는 번호 없는 별표로 해석하지 않습니다.
+HTML_REFERENCE_PATTERN = re.compile(
+    r'제\s*(\d+)\s*조(?:\s*의\s*(\d+))?'
+    r'|(?<![가-힣A-Za-z0-9_])별표(?:\s*(\d+)(?:\s*의\s*(\d+))?'
+    r'|(?=$|[\s\]\)」】.,;:!?]|(?:와|과|에|의|를|는|은|가|로)(?=\s|$)))'
+)
+
+
+def reference_heading(number, title):
+    # API의 0은 번호 없는 별표의 내부 키로 유지하되 화면에는 '별표'로 표시합니다.
+    # 기존 DB 및 과거 출처의 '#법령명-별표0' 앵커를 바꾸지 않아 HTML만 갱신할 수 있습니다.
+    display = '별표' if number == '별표 0' else number
+    return display + (f'({title})' if title and title not in (number, display) else '')
 
 
 def render_html(law: Law) -> str:
@@ -125,7 +140,7 @@ def render_html(law: Law) -> str:
     toc_parts, sections, target_styles = [], [], []
     last_chapter = ''
     def heading(number, title):
-        return number + (f'({title})' if title else '')
+        return reference_heading(number, title)
     def add_toc(node, index):
         label = esc(heading(node.number, node.title))
         toc_parts.append(f'<a data-section-index="{index}" href="#{quote(node.section_id, safe="")}">{label}</a>')
@@ -138,15 +153,19 @@ def render_html(law: Law) -> str:
     def annotated_body(article):
         by_number = {a.number: a for a in [*law.articles, *law.annexes]}
         parts, cursor = [], 0
-        for match in re.finditer(r'제\s*(\d+)\s*조(?:\s*의\s*(\d+))?|별표\s*(\d+)(?:\s*의\s*(\d+))?', article.body):
+        for match in HTML_REFERENCE_PATTERN.finditer(article.body):
             parts.append(esc(article.body[cursor:match.start()]))
             if match[3]:
                 number = f'별표 {int(match[3])}' + (f'의{int(match[4])}' if match[4] else '')
-            else:
+            elif match[1]:
                 number = f'제{int(match[1])}조' + (f'의{int(match[2])}' if match[2] else '')
+            else:
+                # 번호 없는 참조는 API에서 번호 0으로 수록된 별표에만 연결합니다.
+                # 별표 1만 있다고 해서 '별표'를 임의로 별표 1로 치환하지 않습니다.
+                number = '별표 0'
             target = by_number.get(number) if reference_target(article.body,match.start(),law.name)==law.name else None
             if target and target.title and number != article.number:
-                label = esc(number + ('(' + target.title + ')' if target.title != number else ''))
+                label = esc(reference_heading(number, target.title))
                 parts.append(f'<a href="#{quote(target.section_id,safe="")}">{label}</a>')
             else:
                 parts.append(esc(match[0]))

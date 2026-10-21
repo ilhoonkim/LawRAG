@@ -32,12 +32,27 @@ def annex_xml():
         '</법령>'.encode(), ('<별표>' + nodes + '</별표></법령>').encode())
 
 
+def unnumbered_annex_xml(number='000000'):
+    # 사용자 화면의 '선박법 시행령 제13조 ... 별표와 같다' 형태를 합성 재현합니다.
+    return f'''<법령><기본정보><법령ID>TEST-UNNUMBERED</법령ID>
+      <법령명_한글>선박법 시행령</법령명_한글><시행일자>20191008</시행일자></기본정보>
+      <조문><조문단위><조문번호>13</조문번호><조문제목>과태료의 부과기준</조문제목>
+      <조문내용>제13조(과태료의 부과기준) 법 제35조제1항 및 제2항에 따른 과태료의 부과기준은 별표와 같다.</조문내용>
+      </조문단위></조문><별표><별표단위><별표구분>별표</별표구분>
+      <별표번호>{number}</별표번호><별표가지번호>00</별표가지번호>
+      <별표제목>과태료의 부과기준(제13조 관련)</별표제목>
+      <별표내용>■ 선박법 시행령 [별표] &lt;개정 2019. 10. 8.&gt;</별표내용>
+      <별표PDF파일링크>/example.pdf</별표PDF파일링크>
+      </별표단위></별표></법령>'''.encode()
+
+
 class DocumentLinks(HTMLParser):
     def __init__(self, page):
         super().__init__()
         self.section = None
         self.ids = set()
         self.links = []
+        self.text = []
         self.feed(page)
 
     def handle_starttag(self, tag, attrs):
@@ -52,6 +67,47 @@ class DocumentLinks(HTMLParser):
     def handle_endtag(self, tag):
         if tag == 'section':
             self.section = None
+
+    def handle_data(self, text):
+        self.text.append(text)
+
+
+@pytest.mark.parametrize('parse,render', [
+    (parse_law, render_html), (standalone.parse_law_xml, standalone.render_html)
+])
+@pytest.mark.parametrize('number', ['0', '000000'])
+def test_unnumbered_annex_display_and_link_preserve_old_anchor(parse, render, number):
+    page = render(parse(unnumbered_annex_xml(number)))
+    parsed = DocumentLinks(page)
+    refs = [unquote(url) for section, url in parsed.links if section == '선박법 시행령-제13조']
+    assert refs == ['#선박법 시행령-별표0']
+    assert '선박법 시행령-별표0' in parsed.ids
+    assert '별표 0' not in ''.join(parsed.text)
+    assert '별표(과태료의 부과기준(제13조 관련))</a>와 같다.' in page
+    assert not any(url.startswith('#') for section, url in parsed.links if section == '선박법 시행령-별표0')
+    assert ('선박법 시행령-별표0', 'https://www.law.go.kr/example.pdf') in parsed.links
+
+
+@pytest.mark.parametrize('parse,render', [
+    (parse_law, render_html), (standalone.parse_law_xml, standalone.render_html)
+])
+def test_bare_annex_boundaries_foreign_references_and_missing_targets(parse, render):
+    law = parse(unnumbered_annex_xml())
+    law.articles[0].body = ('[별표] 참조. 별표에 따른다. 별표를 적용한다. 별표\n'
+                            '「다른법」 별표와 같다. 같은 법 별표를 적용한다. '
+                            '별표 1과 별표 1의2는 없다. 특별표 별표준 별표목록')
+    parsed = DocumentLinks(render(law))
+    refs = [unquote(url) for section, url in parsed.links if section == '선박법 시행령-제13조']
+    assert refs == ['#선박법 시행령-별표0'] * 4
+    # 번호 있는 별표가 하나뿐이어도 번호 없는 참조의 대상으로 추정하지 않습니다.
+    numbered = parse(unnumbered_annex_xml('1'))
+    assert not [url for section, url in DocumentLinks(render(numbered)).links
+                if section == '선박법 시행령-제13조']
+    law.annexes[0].title = '별표 0'  # 제목이 없어서 파서가 번호를 대신 넣은 경우
+    law.annexes[0].body = ''
+    page = render(law)
+    assert '<h2>별표</h2>' in page and '별표 0' not in ''.join(DocumentLinks(page).text)
+    assert '별표 본문이 확보되지 않았습니다.' in page
 
 
 @pytest.mark.parametrize('parse,render', [
@@ -108,7 +164,7 @@ def test_rebuild_every_version_and_rule_without_changing_db_or_raw(tmp_path, mon
     assert {p.name: p.read_bytes() for p in (tmp_path / 'raw').iterdir()} == before_raw
     assert '[시행 2020.01.01]' in paths[0].read_text(encoding='utf-8')
     assert '[시행 2026.01.01]' in paths[1].read_text(encoding='utf-8')
-    assert all('data-viewer-version="3"' in p.read_text(encoding='utf-8') for p in paths)
+    assert all('data-viewer-version="4"' in p.read_text(encoding='utf-8') for p in paths)
     assert not list((tmp_path / 'html').glob('*.tmp'))
 
 
@@ -124,7 +180,7 @@ def test_rebuild_preserves_failed_files_and_continues(tmp_path):
     report = rebuild_all(tmp_path, notify=lambda _: None)
     assert (report['completed'], report['failed']) == (1, 2)
     assert paths[0].read_text() == paths[1].read_text() == 'previous HTML'
-    assert 'data-viewer-version="3"' in paths[2].read_text(encoding='utf-8')
+    assert 'data-viewer-version="4"' in paths[2].read_text(encoding='utf-8')
 
 
 def test_rebuild_replace_failure_keeps_previous_html(tmp_path, monkeypatch):
@@ -138,3 +194,20 @@ def test_rebuild_replace_failure_keeps_previous_html(tmp_path, monkeypatch):
     report = rebuild_all(tmp_path, notify=lambda _: None)
     assert report['failed'] == 1 and path.read_text() == 'previous HTML'
     assert not list((tmp_path / 'html').glob('*.tmp'))
+
+
+def test_rebuild_unnumbered_annex_without_reindexing(tmp_path):
+    store = Store(tmp_path)
+    raw = unnumbered_annex_xml()
+    row = store.ingest(raw, FakeProvider(), archive_only=True)
+    path = tmp_path / 'html' / (row['version'] + '.html')
+    path.write_text('<html data-viewer-version="3">별표 0</html>', encoding='utf-8')
+    before = store.db.read_bytes()
+    report = rebuild_all(tmp_path, notify=lambda _: None)
+    assert (report['completed'], report['failed']) == (1, 0)
+    assert store.db.read_bytes() == before
+    assert (tmp_path / 'raw' / (row['version'] + '.xml')).read_bytes() == raw
+    parsed = DocumentLinks(path.read_text(encoding='utf-8'))
+    assert ('선박법 시행령-제13조', '#선박법 시행령-별표0') in [
+        (section, unquote(url)) for section, url in parsed.links]
+    assert '별표 0' not in ''.join(parsed.text)
