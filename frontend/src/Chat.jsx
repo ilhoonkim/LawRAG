@@ -109,7 +109,7 @@ export default function Chat({ visible, status, onSource }) {
     </aside>
     <main><header><span className="agent-pill">◉ 법령 검색 에이전트</span><div className="chat-header-actions"><span id="connection" role="status">{storageError || (status ? `${status.laws.length}개 법령 · ${status.llm_configured ? 'AI 연결 설정됨' : 'AI 키 미설정'}` : '서버 상태 확인 중')}</span><button className="mobile-new-chat" disabled={busy} onClick={() => setActive(null)}>새 대화</button><SearchSettings mode={mode} fusion={fusion} threshold={threshold} disabled={busy} onApply={value => { setMode(value.mode); setFusion(value.fusion); setThreshold(value.threshold); }} /></div></header>
       <div id="messages" ref={messagesRef} aria-live="polite">
-        {!current && <div className="welcome"><div className="welcome-icon">§</div><h1>법령에 묻고,<br />근거로 확인하세요.</h1><p>관련 조문을 찾아 답변과 원문을 함께 제공합니다.</p><button id="example" onClick={() => setQuestion('선박안전법에 적용되지 않는 것은?')}>선박안전법에 적용되지 않는 것은? ↗</button></div>}
+        {!current && <div className="welcome"><div className="welcome-icon">§</div><h1>법령에 묻고,<br />근거로 확인하세요.</h1><p>관련 조문을 찾아 답변과 원문을 함께 제공합니다.</p><button id="example" onClick={() => setQuestion('부동산 계약 시 필요 서류는?')}>부동산 계약 시 필요 서류는? ↗</button></div>}
         {messages.map((m,i) => <article key={i} className={`message ${m.role}`}>
           {m.role === 'assistant' && <div className="message-label">LAW RAG · 법령 에이전트{m.model && <span className="answer-model"> · {m.model}</span>}</div>}
           {m.as_of && <div className="answer-date">기준일 {m.as_of} · 수집된 개정 버전 기준</div>}
