@@ -42,13 +42,13 @@ def test_old_annex_never_mixed_with_new(tmp_path):
     assert '과거 선박 B' in next(e for e in expanded if e['number']=='별표 2')['body']
 
 
-def test_missing_annex_blocks_generation(tmp_path):
+def test_missing_annex_allows_supported_answer(tmp_path):
     provider=FakeProvider();app=create_app(Settings(data_dir=tmp_path),provider)
     app.state.store.ingest(referenced_raw(False),provider)
     r=TestClient(app).post('/api/chat',json={'question':'선박안전법 적용범위','limit':1,'as_of':'2026-10-21'}).json()
-    assert not r['generated'] and provider.calls==0
+    assert r['generated'] and provider.calls==1
     assert r['missing_references'][0]['number']=='별표 2'
-    assert '본문이 확보되지 않았습니다' in r['answer']
+    assert r['evidence']
 
 
 def test_external_references_are_not_bound_to_own_law():

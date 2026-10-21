@@ -47,3 +47,35 @@ export function Modal({ title, onClose, className = '', children, id }) {
     {children}
   </dialog>;
 }
+
+export async function streamChat(body, onStage) {
+  const response = await fetch('/api/chat/stream', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(typeof error.detail === 'string' ? error.detail : '입력값 또는 서버 상태를 확인하세요.');
+  }
+  if (!response.body) throw new Error('스트리밍 응답을 읽을 수 없습니다.');
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let pending = '', result;
+  function consume(line) {
+    if (!line.trim()) return;
+    const event = JSON.parse(line);
+    if (event.type === 'stage') onStage(event.stage);
+    if (event.type === 'result') result = event.result;
+    if (event.type === 'error') throw new Error(event.detail);
+  }
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      pending += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      const lines = pending.split('\n'); pending = lines.pop();
+      lines.forEach(consume);
+      if (done) break;
+    }
+    consume(pending);
+    if (!result) throw new Error('답변 수신이 중단되었습니다. 다시 시도해 주세요.');
+    return result;
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}

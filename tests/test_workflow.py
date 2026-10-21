@@ -15,7 +15,11 @@ class FakeProvider:
     calls = 0
     def embed(self, texts):
         return [[1., .1, 0.] if any(t in s for t in ['적용', '범위']) else [0., .1, 1.] for s in texts]
-    def answer(self, question, evidence, history):
+    def rewrite_question(self, question):
+        return question
+    def filter_evidence(self, question, candidates):
+        return candidates
+    def answer(self, question, evidence, history, missing_references=None):
         self.calls += 1
         assert evidence[0]['number'] == '제3조'
         return '테스트용 선박은 적용 제외 대상입니다. [1]'

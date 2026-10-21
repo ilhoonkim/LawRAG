@@ -22,6 +22,21 @@ class UIAPI(FakeAPI):
             n=int(mst)-200
             return version(f'{2010+n}0101',f'{2009+n}1201',mst)
         return super().fetch(mst,kind)
-app=create_app(Settings(data_dir=Path(mkdtemp(prefix='lawrag-management-'))),FakeProvider(),UIAPI())
+class UIProvider(FakeProvider):
+    def rewrite_question(self, question):
+        import time
+        time.sleep(.6)
+        return super().rewrite_question(question)
+    def filter_evidence(self, question, candidates):
+        import time
+        if candidates:
+            time.sleep(.6)
+        return super().filter_evidence(question,candidates)
+    def answer(self, *args, **kwargs):
+        import time
+        time.sleep(.6)
+        return super().answer(*args, **kwargs)
+
+app=create_app(Settings(data_dir=Path(mkdtemp(prefix='lawrag-management-'))),UIProvider(),UIAPI())
 app.state.store.ingest(version('20260101','20251201','101'),FakeProvider(),mst='101',archive_only=True)
 uvicorn.run(app,host='127.0.0.1',port=int(sys.argv[1]) if len(sys.argv)>1 else 8002)

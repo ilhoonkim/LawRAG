@@ -1,5 +1,6 @@
 """Persistent SQLite vector storage (sqlite-vec cosine distance) and hybrid retrieval."""
 from datetime import date, datetime, timezone
+import hashlib
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -113,6 +114,11 @@ class Store:
         finally:
             db.close()
 
+    def archive_raw(self, raw):
+        filename = hashlib.sha256(raw).hexdigest()[:20] + '.xml'
+        (self.directory / 'raw' / filename).write_bytes(raw)
+        return filename
+
     def ingest(self, raw, provider, keyword_only=False, *, mst='', kind='law', archive_only=False):
         law = parse_admrul(raw) if kind == 'admrul' else parse_law(raw)
         with self.connect() as db:
@@ -129,7 +135,7 @@ class Store:
         vectors, title_vectors = embeddings[:len(texts)], embeddings[len(texts):]
         filename = f'{law.version}.html'
         # Immutable artifacts written before the DB transaction. Old citations survive refresh.
-        (self.directory / 'raw' / f'{law.version}.xml').write_bytes(raw)
+        self.archive_raw(raw)
         (self.directory / 'html' / filename).write_text(render_html(law), encoding='utf-8')
         packed = [(i, a, sqlite_vec.serialize_float32(v) if v is not None else None,
                    provider.fingerprint if v is not None else None)
@@ -262,7 +268,7 @@ class Store:
                 article['reference_titles'] = titles
         return expanded, missing
 
-    def search(self, question, provider, threshold=.48, limit=5, mode='hybrid', as_of=None, title_weight=.35, min_title=.15, min_body=.20):
+    def search(self, question, provider, threshold=.48, limit=5, mode='hybrid', as_of=None, title_weight=.35, min_title=.15, min_body=.20, query_variants=None):
         if not 0 <= threshold <= 1:
             raise ValueError('임계치는 0~1이어야 합니다.')
         if not all(0 <= n <= 1 for n in [title_weight,min_title,min_body]):
@@ -285,7 +291,7 @@ class Store:
                 longest = max(named_laws, key=len)
                 rows = [r for r in rows if r['law_name'] == longest]
             similarities = {}
-            queries = [expanded_query(question)]
+            queries = list(dict.fromkeys([expanded_query(question)] + [expanded_query(q) for q in (query_variants or [])]))
             if mode == 'hybrid' and rows:
                 if any(r['model'] != provider.fingerprint or r['vector'] is None or r['title_vector'] is None for r in rows):
                     raise SetupError('벡터가 없거나 임베딩 모델이 변경되었습니다. 버전 상세에서 제목·본문 재색인을 실행하거나 키워드 모드를 선택하세요.')
@@ -297,9 +303,9 @@ class Store:
                 def compare(vector, row):
                     return tuple(db.execute('SELECT 1 - vec_distance_cosine(?,?), 1 - vec_distance_cosine(?,?)',
                         (row['title_vector'], vector, row['vector'], vector)).fetchone())
-                original = sqlite_vec.serialize_float32(vectors[0])
-                similarities = {row['id']:[compare(original,row)] for row in rows}
-                if callable(getattr(provider, 'search_queries', None)):
+                packed = [sqlite_vec.serialize_float32(v) for v in vectors]
+                similarities = {row['id']:[compare(v,row) for v in packed] for row in rows}
+                if query_variants is None and callable(getattr(provider, 'search_queries', None)):
                     # A short semantic shortlist supplies the actual vocabulary
                     # of this corpus without requiring a user-provided law name.
                     shortlist = sorted(rows, key=lambda r: title_weight*similarities[r['id']][0][0]
@@ -318,7 +324,7 @@ class Store:
         results = []
         for row in rows:
             matches = []
-            for query, semantic in zip(queries, similarities.get(row['id'], [(0.,0.)])):
+            for query, semantic in zip(queries, similarities.get(row['id'], [(0.,0.)] * len(queries))):
                 title_lexical, body_lexical = lexical_components(query, row)
                 title_semantic, body_semantic = [max(0.,min(1.,v)) for v in semantic]
                 title_score = .65*title_semantic + .35*title_lexical if mode == 'hybrid' else title_lexical

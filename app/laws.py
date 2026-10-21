@@ -249,34 +249,15 @@ class LawAPI:
 
 
 def parse_admrul(raw: bytes) -> Law:
-    """Read structured administrative-rule articles; never invent clause boundaries."""
+    """Read structured articles or source-text sections without inventing clauses."""
     root = xml_root(raw)
     name = text(root, './/행정규칙명')
     rule_id = text(root, './/행정규칙ID') or text(root, './/행정규칙일련번호')
     if not name or not rule_id:
         raise ValueError('행정규칙명/식별자가 없는 응답입니다. admrul API 권한과 XML 형식을 확인하세요.')
-    articles = []
-    nodes = root.findall('.//조문단위') or root.findall('.//조문')
-    for node in nodes:
-        body = text(node, '조문내용')
-        if not body:
-            body = content_text(node).strip() if not list(node) else ''
-        if not body or '<' in body:
-            continue
-        number = text(node, '조문번호')
-        match = re.match(r'제\s*(\d+)\s*조(?:의\s*(\d+))?', body)
-        if number.isdigit():
-            label = f'제{int(number)}조'
-            branch = text(node, '조문가지번호')
-            if branch.isdigit() and int(branch):
-                label += f'의{int(branch)}'
-        elif match:
-            label = f'제{int(match[1])}조' + (f'의{int(match[2])}' if match[2] else '')
-        else:
-            continue
-        articles.append(Article(label, text(node, '조문제목'), body, f'{name}-{label}'))
-    if not articles or len({a.number for a in articles}) != len(articles):
-        raise ValueError('이 행정규칙 응답은 조 단위 구조를 확인할 수 없습니다. 원문 XML에 맞는 파서 확장이 필요합니다.')
+    from .admrul_parser import parse_units
+    articles = [Article(unit['number'],unit['title'],unit['body'],
+                        f"{name}-{unit['number']}",unit['chapter']) for unit in parse_units(root)]
     return Law('admrul:' + rule_id, name, text(root, './/시행일자'),
                hashlib.sha256(raw).hexdigest()[:20], articles,
                'https://www.law.go.kr/행정규칙/' + quote(name, safe=''), text(root, './/발령일자'), 'admrul', parse_annexes(root, name))

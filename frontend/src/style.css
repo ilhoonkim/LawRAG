@@ -13,3 +13,28 @@ body{display:block}#root{display:grid;grid-template-columns:84px minmax(0,1fr);h
 #source-dialog{width:96vw;max-width:1800px;height:94dvh}#source-dialog iframe{display:block;height:calc(100% - 54px)}
 
 .collection-failure{margin:6px 0 0;max-width:360px;white-space:normal;overflow-wrap:anywhere;color:#b42318;font-size:11px;line-height:1.6}
+
+/* Chat sources open only after a law is selected. */
+.chat-page{position:relative;grid-template-columns:210px minmax(0,1fr)}
+.chat-page.has-sources{grid-template-columns:210px minmax(0,1fr) 300px}
+.message.user{margin-right:0;margin-left:auto}
+.pipeline-progress{width:100%;color:#708494;font-size:12px}
+.pipeline-progress ol{display:flex;flex-wrap:wrap;gap:12px 18px;padding:0;list-style:none}
+.pipeline-progress li{display:flex;align-items:center;gap:7px;color:#8d9ba8}
+.pipeline-progress li.current{color:#246bf2;font-weight:600}
+.pipeline-progress li.done{color:#4b7881}
+.step-mark{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:#fff;border:1px solid #dbe5ed;font-size:11px}
+.current .step-mark{border-color:#246bf2;background:#e8f0ff}
+.model-picker{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:#6a7f91}
+.model-picker select{max-width:230px;color:#334b62;border:1px solid #e1e8ef;border-radius:6px;padding:5px 8px;background:#fff}
+.model-picker input{max-width:190px;min-width:0;padding:5px 8px;border:1px solid #e1e8ef;border-radius:6px}
+.model-picker small{font-size:10px;color:#8c9ba8}
+.answer-model{font-weight:400;letter-spacing:0}
+.evidence-chips button[aria-expanded=true]{border-color:#648fff;background:#f1f6ff}
+.evidence-chips button span{margin-left:6px;color:#487ddd}
+.chat-page .sources{display:block;background:#fff;min-width:0}
+.sources h2 button{background:transparent;padding:4px 7px;font-size:13px}
+.source-law-name{display:block;font-size:13px;line-height:1.7;overflow-wrap:anywhere}
+.source-open{display:block;margin-top:10px;font-size:11px;color:#3973ca}
+@media(max-width:1250px){.chat-page,.chat-page.has-sources{grid-template-columns:180px minmax(0,1fr)}.chat-page .sources{position:absolute;right:0;top:0;bottom:0;width:min(320px,90%);z-index:5;box-shadow:-8px 0 24px #16374b20}}
+@media(max-width:850px){.chat-page,.chat-page.has-sources{grid-template-columns:minmax(0,1fr)}.chat-page .sidebar{display:none}.model-picker small{flex-basis:100%}.pipeline-progress ol{flex-direction:column;gap:8px}}

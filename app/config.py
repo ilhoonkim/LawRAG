@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 _KEYS_FROM_PROCESS = {name for name in ('LLM_API_KEY','OPENAI_API_KEY') if os.getenv(name)}
+_MODELS_FROM_PROCESS = {name:os.environ[name] for name in ('CHAT_MODEL','RERANK_MODEL','EMBEDDING_MODEL') if os.getenv(name)}
 load_dotenv(ROOT / '.env')
 
 
@@ -21,8 +22,10 @@ class Settings:
     law_oc: str = os.getenv('LAW_API_OC', '')
     api_key: str = os.getenv('LLM_API_KEY', '') or os.getenv('OPENAI_API_KEY', '')
     base_url: str = os.getenv('LLM_BASE_URL', 'https://api.openai.com/v1')
-    embedding_model: str = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
-    chat_model: str = os.getenv('CHAT_MODEL', 'gpt-4.1-mini')
+    embedding_model: str = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-large')
+    chat_model: str = os.getenv('CHAT_MODEL', 'gpt-4.1')
+    rerank_model: str = os.getenv('RERANK_MODEL', '')
+    candidate_limit: int = int(os.getenv('SEARCH_CANDIDATE_LIMIT', '20'))
     threshold: float = float(os.getenv('SEARCH_THRESHOLD', '0.48'))
     title_weight: float = float(os.getenv('SEARCH_TITLE_WEIGHT', '0.35'))
     min_title_score: float = float(os.getenv('SEARCH_MIN_TITLE_SCORE', '0.15'))

@@ -1,8 +1,11 @@
 from pathlib import Path
 from datetime import date
+import json
+from queue import Queue, Empty
+from threading import Thread, Event
 from typing import Literal
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from .config import Settings
@@ -10,7 +13,7 @@ from .laws import LawAPI, SetupError, parse_law, parse_admrul, render_html
 from .provider import Provider
 from .store import Store
 from .management import Management, management_router
-from .temporal import resolve_date
+from .chat_pipeline import retrieve, run_chat, STAGES
 
 class SearchRequest(BaseModel):
     question: str = Field(min_length=2, max_length=2000)
@@ -24,6 +27,7 @@ class Message(BaseModel):
     content: str = Field(max_length=6000)
 
 class ChatRequest(SearchRequest):
+    model: str | None = Field(default=None, min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._:-]+$")
     history: list[Message] = Field(default_factory=list, max_length=6)
 
 class IngestRequest(BaseModel):
@@ -65,7 +69,7 @@ def create_app(settings=None, provider=None, law_api=None):
     @app.get('/api/status')
     def status():
         return {'law_api_configured': bool(settings.law_oc), 'llm_configured': bool(settings.api_key),
-                'threshold': settings.threshold, 'laws': store.list_laws()}
+                'threshold': settings.threshold, 'chat_model': settings.chat_model, 'laws': store.list_laws()}
 
     @app.get('/api/laws/search')
     def find_laws(query: str = Query(min_length=2, max_length=100), page: int = Query(default=1, ge=1)):
@@ -78,46 +82,66 @@ def create_app(settings=None, provider=None, law_api=None):
             raise ValueError('오늘 이후 시행 예정이거나 시행일이 잘못된 본문은 저장하지 않았습니다.')
         return store.ingest(raw, provider, body.keyword_only, mst=body.mst)
 
+    @app.get('/api/models')
+    def models():
+        presets = ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1',
+                   'gpt-5-mini', 'gpt-5', 'gpt-5.1', 'gpt-5.2', 'gpt-5.4']
+        available, warning = [], ''
+        try:
+            available = provider.models() if hasattr(provider, 'models') else []
+        except SetupError as exc:
+            warning = str(exc)
+        return {'models': list(dict.fromkeys([settings.chat_model] + presets + available)),
+                'available': available, 'default': settings.chat_model, 'warning': warning}
+
     @app.post('/api/search')
     def search(body: SearchRequest):
-        cutoff, clarification = resolve_date(body.question, body.as_of)
-        if clarification:
-            return {'evidence': [], 'clarification': clarification, 'as_of': None, 'missing_versions': []}
-        timeline = store.temporal_versions(cutoff)
-        named = [r['name'] for r in timeline['versions'] + timeline['missing'] if r['name'] in body.question]
-        # Catalog gaps do not establish relevance to an unnamed question. Only
-        # identify a missing governing version when the user names that law.
-        named_law = max(named, key=len) if named else None
-        missing = [r for r in timeline['missing'] if r['name'] == named_law]
-        evidence = store.search(body.question, provider, settings.threshold if body.threshold is None else body.threshold,
-                                body.limit, body.mode, as_of=cutoff, title_weight=settings.title_weight,
-                                min_title=settings.min_title_score, min_body=settings.min_body_score)
-        evidence, missing_references = store.expand_references(evidence)
-        return {'evidence': evidence, 'missing_references': missing_references, 'as_of': cutoff.isoformat(), 'clarification': None,
-                'missing_versions': missing, 'coverage_note': timeline['note']}
+        return retrieve(store, provider, settings, body)
+
+    def chat_provider(body):
+        return provider.for_model(body.model or settings.chat_model) if hasattr(provider, 'for_model') else provider
 
     @app.post('/api/chat')
     def chat(body: ChatRequest):
-        result = search(body)
-        evidence = result['evidence']
-        if result['clarification']:
-            return {**result, 'answer': result['clarification'], 'generated': False}
-        if result.get('missing_references'):
-            names = ', '.join(dict.fromkeys(f'{r["law_name"]} {r["number"]}' for r in result['missing_references']))
-            return {**result, 'answer': f'관련 조문은 찾았지만 참조 자료({names})의 본문이 확보되지 않았습니다. 해당 참조 자료를 확보한 뒤 답변해야 합니다.', 'generated': False}
-        if not evidence:
-            if result['missing_versions']:
-                targets = ', '.join(dict.fromkeys(
-                    f'{r["name"]} (시행 {r["effective"][:4]}-{r["effective"][4:6]}-{r["effective"][6:8]})'
-                    for r in result['missing_versions']))
-                answer = (f'질문한 법령의 기준일({result["as_of"]}) 적용 버전이 미수집 상태입니다: {targets}. '
-                          '법령관리에서 이 버전을 수집한 뒤 다시 질문해 주세요.')
-            else:
-                answer = '수집된 법령에서 질문에 답할 만한 근거 조문을 찾지 못했습니다. 어떤 상황인지 조금 더 자세히 알려주세요.'
-            return {**result, 'answer': answer, 'generated': False}
-        question = f'기준일: {result["as_of"]} (이 날짜에 시행 중인 수집 버전 기준)\n{body.question}'
-        answer = provider.answer(question, evidence, [m.model_dump() for m in body.history])
-        return {**result, 'answer': answer, 'generated': True}
+        return run_chat(store, chat_provider(body), settings, body)
+
+    @app.post('/api/chat/stream')
+    def chat_stream(body: ChatRequest):
+        selected = chat_provider(body)
+        events, cancelled = Queue(), Event()
+        def progress(stage):
+            if cancelled.is_set():
+                raise InterruptedError()
+            events.put({'type': 'stage', 'stage': stage, 'label': dict(STAGES)[stage]})
+        def work():
+            try:
+                result = run_chat(store, selected, settings, body, progress)
+                if not cancelled.is_set():
+                    events.put({'type': 'result', 'result': result})
+            except InterruptedError:
+                pass
+            except (SetupError, ValueError) as exc:
+                events.put({'type': 'error', 'detail': str(exc)})
+            except Exception:
+                events.put({'type': 'error', 'detail': '답변 처리 중 오류가 발생했습니다. 다시 시도해 주세요.'})
+            finally:
+                events.put(None)
+        def stream():
+            Thread(target=work, daemon=True).start()
+            try:
+                while True:
+                    try:
+                        event = events.get(timeout=1)
+                    except Empty:
+                        yield '\n'  # heartbeat lets disconnects cancel between stages
+                        continue
+                    if event is None:
+                        break
+                    yield json.dumps(event, ensure_ascii=False) + '\n'
+            finally:
+                cancelled.set()
+        return StreamingResponse(stream(), media_type='application/x-ndjson',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
     @app.get('/documents/{filename}')
     def document(filename: str):

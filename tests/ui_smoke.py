@@ -1,5 +1,6 @@
 """Optional React browser regression check. Requires playwright and Chromium."""
 import os
+import json
 from pathlib import Path
 import shutil
 import socket
@@ -94,9 +95,31 @@ try:
      page.screenshot(path=str(artifacts / 'history.png'),full_page=True)
      history.get_by_role('button',name='확인',exact=True).click()
      page.get_by_role('link',name='채팅',exact=True).click()
+     expect(page.get_by_role('complementary',name='지식 출처')).to_have_count(0)
+     page.get_by_label('답변 모델',exact=True).select_option('gpt-5.4')
      page.get_by_label('질문',exact=True).fill('2020년 6월 1일 기준 선박안전법에 적용되지 않는 것은?')
      page.get_by_role('button',name='질문 전송',exact=True).click()
-     expect(page.locator('.evidence-chips button').first).to_contain_text('제3조')
+     expect(page.locator('.pipeline-progress .current')).to_contain_text('질문 재조정 중')
+     expect(page.locator('.pipeline-progress li')).to_have_count(4)
+     expect(page.locator('.pipeline-progress .current')).to_contain_text('법조항 후보군 검토 중')
+     expect(page.locator('.pipeline-progress .current')).to_contain_text('근거 법조항 기반 답변 생성 중')
+     expect(page.locator('.evidence-chips button')).to_have_count(1)
+     expect(page.locator('.evidence-chips button').first).to_contain_text('선박안전법')
+     expect(page.get_by_role('complementary',name='지식 출처')).to_have_count(0)
+     expect(page.locator('.answer-model')).to_contain_text('gpt-5.4')
+     bubble = page.locator('.message.user').bounding_box()
+     answer = page.locator('.message.assistant').bounding_box()
+     assert abs(bubble['x'] + bubble['width'] - answer['x'] - answer['width']) < 2
+     page.screenshot(path=str(artifacts / 'chat-grouped.png'),full_page=True)
+     page.locator('.evidence-chips button').first.click()
+     expect(page.get_by_role('complementary',name='지식 출처')).to_be_visible()
+     expect(page.locator('.source-card').first).to_contain_text('제3조')
+     page.screenshot(path=str(artifacts / 'chat-sources.png'),full_page=True)
+     page.locator('.source-card').first.click()
+     expect(page.frame_locator('#source-dialog iframe').locator('section:target')).to_have_attribute('id','선박안전법-제3조')
+     page.locator('#source-dialog .dialog-head button').click()
+     page.get_by_label('지식 출처 닫기',exact=True).click()
+     expect(page.get_by_role('complementary',name='지식 출처')).to_have_count(0)
      expect(page.get_by_text('기준일 2020-06-01 · 수집된 개정 버전 기준')).to_be_visible()
      page.get_by_role('link',name='법령관리',exact=True).click()
      page.get_by_role('link',name='채팅',exact=True).click()
@@ -104,13 +127,38 @@ try:
      page.reload()
      page.locator('#history button').first.click()
      expect(page.locator('.evidence-chips button').first).to_be_visible()
+     # Group sorting must preserve original answer citation numbers.
+     sample = [
+       {'law_name':'합성 B법','number':'제1조','score':.95,'title':'최상위','effective':'20200101','version':'b'},
+       {'law_name':'합성 A법','number':'제2조','score':.9,'title':'상위','effective':'20200101','version':'a'},
+       {'law_name':'합성 A법','number':'제3조','score':.7,'title':'하위','effective':'20200101','version':'a'}
+     ]
+     page.route('**/api/chat/stream', lambda route: route.fulfill(status=200, content_type='application/x-ndjson',
+         body=json.dumps({'type':'result','result':{'answer':'합성 검증 답변 [1] [2] [3]','evidence':sample,'as_of':'2026-10-21'}},ensure_ascii=False)+'\n'))
+     page.get_by_label('질문',exact=True).fill('합성 여러 법령 출처 테스트')
+     page.get_by_role('button',name='질문 전송',exact=True).click()
+     chips=page.locator('.message.assistant').last.locator('.evidence-chips button')
+     expect(chips).to_have_count(2)
+     expect(chips.first).to_contain_text('합성 B법')
+     chips.nth(1).click()
+     expect(page.locator('.source-card')).to_have_count(2)
+     expect(page.locator('.source-card').first).to_contain_text('[2] 제2조')
+     expect(page.locator('.source-card').last).to_contain_text('[3] 제3조')
+     expect(page.locator('.source-card').first).to_contain_text('90.0%')
+     expect(page.locator('.source-card').last).to_contain_text('70.0%')
+     page.get_by_label('지식 출처 닫기',exact=True).click()
      page.set_viewport_size({'width':390,'height':844})
+     page.locator('.evidence-chips button').first.click()
+     expect(page.get_by_role('complementary',name='지식 출처')).to_be_visible()
+     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+     page.screenshot(path=str(artifacts / 'chat-mobile.png'),full_page=True)
+     page.get_by_label('지식 출처 닫기',exact=True).click()
      page.get_by_role('link',name='법령관리',exact=True).click()
      expect(page.get_by_role('button',name='수집하기',exact=True)).to_be_visible()
      assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
      page.screenshot(path=str(artifacts / 'mobile.png'),full_page=True)
      assert not errors,errors
-     print('PASS React: categories, explicit search/version/collect steps, missing-only selection, paging, success/failure history, article anchor popup, historical chat, page switching/history persistence, mobile width, zero JS errors')
+     print('PASS React: categories, explicit search/version/collect steps, missing-only selection, paging, success/failure history, article anchor popup, historical chat, streamed stages, model selection, right alignment, grouped/sorted sources and citations, page switching/history persistence, mobile source panel, zero JS errors')
      browser.close()
 
     print('Screenshots:', artifacts)

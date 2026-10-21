@@ -37,6 +37,12 @@ class SearchProvider:
         self.batches = []
         self.expansions = []
 
+    def rewrite_question(self, question):
+        return TERMS
+
+    def filter_evidence(self, question, candidates):
+        return candidates
+
     def embed(self, texts):
         self.batches.append(list(texts))
         vectors = []
@@ -80,7 +86,7 @@ def test_keyword_search_stays_offline(tmp_path):
 def test_chat_answers_unnamed_original_question_from_stored_evidence(tmp_path):
     provider = SearchProvider()
     answered = []
-    def answer(question, evidence, history):
+    def answer(question, evidence, history, missing_references=None):
         answered.append(question)
         assert QUESTION in question and TERMS not in question
         assert evidence[0]['title'] == '보증금 중 일정액의 보호'

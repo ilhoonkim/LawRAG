@@ -164,8 +164,10 @@ class Management:
                 with self.store.connect() as db:
                     event = dict(db.execute('SELECT * FROM collection_history WHERE id=?', (event_id,)).fetchone())
                     db.execute("UPDATE collection_history SET status='running',started_at=? WHERE id=?", (now(), event_id))
+                raw_filename = ''
                 try:
                     raw = self.api.fetch(event['mst'], kind=event['kind'], effective=event['effective'])
+                    raw_filename = self.store.archive_raw(raw)
                     law = parse_admrul(raw) if event['kind'] == 'admrul' else parse_law(raw)
                     if not self.collectible_date(law.effective):
                         raise ValueError('오늘 이후 시행 예정이거나 시행일이 잘못된 본문은 저장하지 않았습니다.')
@@ -184,6 +186,8 @@ class Management:
                         reason = str(exc)
                     elif isinstance(exc, ValueError):
                         reason = '응답 파싱 또는 입력 검증 실패: ' + str(exc)[:300]
+                        if raw_filename:
+                            reason += f' 원문 XML: raw/{raw_filename} (DATA_DIR 기준)'
                     else:
                         reason = '내부 저장 또는 처리 실패. 서버 상태를 확인한 후 다시 수집하세요.'
                     with self.store.connect() as db:
