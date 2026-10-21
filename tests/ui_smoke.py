@@ -68,6 +68,7 @@ try:
      dialog.get_by_label('선박안전법 2000-01-01 수집',exact=True).check()
      dialog.get_by_role('button',name='수집 시작',exact=True).click()
      expect(dialog.get_by_text('수집 실패',exact=True)).to_be_visible(timeout=12000)
+     expect(dialog.locator('.collection-failure')).to_have_text('법령 API 요청 실패')
      dialog.get_by_role('button',name='법령 수집 닫기').click()
      expect(page.locator('.revisions-table tbody tr')).to_have_count(2,timeout=12000)
      expect(page.get_by_role('navigation',name='법령 카테고리').get_by_role('button',name='선박안전법',exact=True)).to_be_visible()

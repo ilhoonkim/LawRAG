@@ -3,6 +3,44 @@ import math
 import httpx
 from .laws import SetupError
 
+
+def api_failure(response):
+    """Report useful failure categories without echoing upstream secrets/URLs."""
+    try:
+        payload = response.json()
+        error = payload.get('error', {}) if isinstance(payload, dict) else {}
+        error = error if isinstance(error, dict) else {}
+    except ValueError:
+        error = {}
+    code = error.get('code') or error.get('type')
+    known_codes = {'invalid_api_key','insufficient_quota','billing_hard_limit_reached',
+                   'rate_limit_exceeded','model_not_found','context_length_exceeded',
+                   'invalid_request_error','permission_denied','access_denied'}
+    suffix = f' / {code}' if isinstance(code,str) and code in known_codes else ''
+    status = response.status_code
+    if code in ('insufficient_quota','billing_hard_limit_reached'):
+        detail = 'API 잔액 또는 결제 한도가 부족합니다. API 프로젝트의 결제·사용 한도를 확인하세요.'
+    elif status == 401 or code == 'invalid_api_key':
+        detail = 'API 인증이 거부되었습니다. 서버가 읽은 키와 해당 프로젝트의 키 상태를 확인하세요.'
+    elif status == 403:
+        detail = 'API 접근이 거부되었습니다. 프로젝트·모델 사용 권한과 접근 제한을 확인하세요.'
+    elif status == 429:
+        detail = '요청 한도를 초과했습니다. 잠시 후 재시도하고 API 사용 한도를 확인하세요.'
+    elif status == 404 or code == 'model_not_found':
+        detail = '모델 또는 API 경로를 찾을 수 없습니다. EMBEDDING_MODEL·LLM_BASE_URL과 모델 사용 권한을 확인하세요.'
+    elif code == 'context_length_exceeded' or (
+        status == 400 and any(t in str(error.get('message','')).lower()
+                             for t in ('maximum context length','too many tokens','max tokens','maximum number of tokens'))):
+        detail = '임베딩 입력이 모델의 토큰 한도를 초과했습니다.'
+    elif status in (400, 422):
+        detail = '요청 입력 또는 모델 설정이 거부되었습니다. 임베딩 모델과 입력 형식을 확인해야 합니다.'
+    elif status >= 500:
+        detail = 'AI 서비스에서 서버 오류가 발생했습니다. 잠시 후 다시 시도하세요.'
+    else:
+        detail = 'AI 서비스가 요청을 거부했습니다. API 주소와 서비스 상태를 확인하세요.'
+    return SetupError(f'AI API 요청 실패 [HTTP {status}{suffix}]: {detail}')
+
+
 class Provider:
     def __init__(self, settings):
         self.settings = settings
@@ -18,10 +56,16 @@ class Provider:
             with httpx.Client(timeout=120) as client:
                 response = client.post(self.settings.base_url.rstrip('/') + path,
                     headers={'Authorization': f'Bearer {self.settings.api_key}'}, json=body)
-                response.raise_for_status()
-                return response.json()
-        except (httpx.HTTPError, ValueError):
-            raise SetupError('AI API 요청 실패: 키, 모델, API 주소 및 사용 한도를 확인하세요.') from None
+        except httpx.TimeoutException:
+            raise SetupError('AI API 요청 실패 [시간 초과]: AI 서버 응답을 기다리다 연결이 종료되었습니다.') from None
+        except httpx.HTTPError:
+            raise SetupError('AI API 요청 실패 [연결 오류]: API 주소, 인터넷·프록시·인증서 설정을 확인하세요.') from None
+        if not response.is_success:
+            raise api_failure(response)
+        try:
+            return response.json()
+        except ValueError:
+            raise SetupError('AI API 요청 실패 [응답 형식 오류]: API가 JSON 응답을 반환하지 않았습니다. LLM_BASE_URL을 확인하세요.') from None
 
     def embed(self, texts):
         if any(len(t) > 24000 for t in texts):

@@ -4,7 +4,16 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
+_KEYS_FROM_PROCESS = {name for name in ('LLM_API_KEY','OPENAI_API_KEY') if os.getenv(name)}
 load_dotenv(ROOT / '.env')
+
+
+def ai_key_source():
+    """Describe the winning key source, never its value."""
+    name = next((name for name in ('LLM_API_KEY','OPENAI_API_KEY') if os.getenv(name)), None)
+    if name is None:
+        return '설정되지 않음'
+    return f'{name} / ' + ('프로세스 환경변수 (.env보다 우선)' if name in _KEYS_FROM_PROCESS else '프로젝트 .env')
 
 @dataclass
 class Settings:
