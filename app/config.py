@@ -15,3 +15,6 @@ class Settings:
     embedding_model: str = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
     chat_model: str = os.getenv('CHAT_MODEL', 'gpt-4.1-mini')
     threshold: float = float(os.getenv('SEARCH_THRESHOLD', '0.48'))
+    title_weight: float = float(os.getenv('SEARCH_TITLE_WEIGHT', '0.35'))
+    min_title_score: float = float(os.getenv('SEARCH_MIN_TITLE_SCORE', '0.15'))
+    min_body_score: float = float(os.getenv('SEARCH_MIN_BODY_SCORE', '0.20'))

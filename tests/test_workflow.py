@@ -174,7 +174,7 @@ def test_provider_protocol_and_sorted_embeddings(tmp_path, monkeypatch):
     assert provider.embed(['a','b']) == [[1.,0.],[0.,1.]]
     answer = provider.answer('질문', [{'law_name':'법','number':'제1조','title':'제목','body':'본문'}], [])
     assert answer == '근거 답변 [1]'
-    assert '[1] 법 제1조(제목)\n본문' in seen[-1][1]['messages'][-1]['content']
+    assert '[1] 법 제1조(제목) 시행일: 미상\n본문' in seen[-1][1]['messages'][-1]['content']
 
 
 def test_law_api_protocol(tmp_path, monkeypatch):

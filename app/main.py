@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import date
 from typing import Literal
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, FileResponse
@@ -8,12 +9,15 @@ from .config import Settings
 from .laws import LawAPI, SetupError
 from .provider import Provider
 from .store import Store
+from .management import Management, management_router
+from .temporal import resolve_date
 
 class SearchRequest(BaseModel):
     question: str = Field(min_length=2, max_length=2000)
     threshold: float | None = Field(default=None, ge=0, le=1)
     mode: Literal['hybrid', 'keyword'] = 'hybrid'
     limit: int = Field(default=5, ge=1, le=10)
+    as_of: date | None = None
 
 class Message(BaseModel):
     role: Literal['user', 'assistant']
@@ -34,6 +38,9 @@ def create_app(settings=None, provider=None, law_api=None):
     law_api = law_api or LawAPI(settings.law_oc)
     app = FastAPI(title='LawRAG', version='0.1.0')
     app.state.store = store
+    manager = Management(store, provider, law_api)
+    app.state.management = manager
+    app.include_router(management_router(manager))
 
     @app.exception_handler(SetupError)
     async def setup_error(request, exc):
@@ -70,15 +77,39 @@ def create_app(settings=None, provider=None, law_api=None):
 
     @app.post('/api/search')
     def search(body: SearchRequest):
-        return {'evidence': store.search(body.question, provider, settings.threshold if body.threshold is None else body.threshold, body.limit, body.mode)}
+        cutoff, clarification = resolve_date(body.question, body.as_of)
+        if clarification:
+            return {'evidence': [], 'clarification': clarification, 'as_of': None, 'missing_versions': []}
+        timeline = store.temporal_versions(cutoff)
+        missing = timeline['missing']
+        named = [r['name'] for r in timeline['versions'] + missing if r['name'] in body.question]
+        if named:
+            missing = [r for r in missing if r['name'] == max(named, key=len)]
+        evidence = store.search(body.question, provider, settings.threshold if body.threshold is None else body.threshold,
+                                body.limit, body.mode, as_of=cutoff, title_weight=settings.title_weight,
+                                min_title=settings.min_title_score, min_body=settings.min_body_score)
+        evidence, missing_references = store.expand_references(evidence)
+        return {'evidence': evidence, 'missing_references': missing_references, 'as_of': cutoff.isoformat(), 'clarification': None,
+                'missing_versions': missing, 'coverage_note': timeline['note']}
 
     @app.post('/api/chat')
     def chat(body: ChatRequest):
-        evidence = search(body)['evidence']
+        result = search(body)
+        evidence = result['evidence']
+        if result['clarification']:
+            return {**result, 'answer': result['clarification'], 'generated': False}
+        if result.get('missing_references'):
+            names = ', '.join(dict.fromkeys(f'{r["law_name"]} {r["number"]}' for r in result['missing_references']))
+            return {**result, 'answer': f'관련 조문은 찾았지만 참조 자료({names})의 본문이 확보되지 않았습니다. 해당 참조 자료를 확보한 뒤 답변해야 합니다.', 'generated': False}
         if not evidence:
-            return {'answer': '설정한 임계치 이상의 근거 조문을 찾지 못했습니다. 법령 수집 여부를 확인하거나 법령명과 질문을 구체적으로 입력해 주세요.', 'evidence': [], 'generated': False}
-        answer = provider.answer(body.question, evidence, [m.model_dump() for m in body.history])
-        return {'answer': answer, 'evidence': evidence, 'generated': True}
+            if result['missing_versions']:
+                answer = '기준일에 적용될 버전이 미수집 상태입니다. 법령관리에서 해당 개정 연혁을 수집한 뒤 다시 질문해 주세요.'
+            else:
+                answer = '설정한 임계치 이상의 근거 조문을 찾지 못했습니다. 기준일에 시행 중인 버전의 수집 여부를 확인하거나 법령명과 질문을 구체적으로 입력해 주세요.'
+            return {**result, 'answer': answer, 'generated': False}
+        question = f'기준일: {result["as_of"]} (이 날짜에 시행 중인 수집 버전 기준)\n{body.question}'
+        answer = provider.answer(question, evidence, [m.model_dump() for m in body.history])
+        return {**result, 'answer': answer, 'generated': True}
 
     @app.get('/documents/{filename}')
     def document(filename: str):
@@ -98,4 +129,11 @@ def create_app(settings=None, provider=None, law_api=None):
         return FileResponse(static / 'index.html')
     return app
 
-app = create_app()
+# Uvicorn resolves app.main:app lazily. Importing create_app in tests must not
+# initialize or mark jobs interrupted in the user's real database.
+def __getattr__(name):
+    if name == 'app':
+        instance = create_app()
+        globals()['app'] = instance
+        return instance
+    raise AttributeError(name)
