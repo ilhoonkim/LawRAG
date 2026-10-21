@@ -181,6 +181,17 @@ def test_user_facts_only_dont_trigger_search_and_remaining_gaps_are_preserved(tm
     assert result['additional_search_rounds']==0 and provider.assessment['missing_facts']==['계약일']
 
 
+def test_linked_article_independently_found_in_extra_search_gets_its_own_score(tmp_path):
+    provider=GapProvider([assessment(['서울 금액'],['지역 금액 확인']),assessment(sufficient=True)])
+    store=Store(tmp_path)
+    put(store,'합성 보호법',[('1','보호','보증금 보호 범위는 제2조에 따른다.'),
+                             ('2','금액','서울 금액은 별도로 정한다.')])
+    result=run_chat(store,provider,Settings(),ChatRequest(question='보증금 보호',mode='keyword'))
+    assert result['additional_search_rounds']==1
+    hit=next(e for e in result['evidence'] if e['number']=='제2조')
+    assert not hit.get('relation') and hit['matched_query']=='서울 금액'
+
+
 def test_extra_search_stops_after_one_round_even_when_still_insufficient(tmp_path):
     provider=GapProvider([assessment(['서울 금액'],['금액 없음']),assessment(['세번째 검색'],['여전히 금액 없음'])])
     app=create_app(Settings(data_dir=tmp_path),provider,object())

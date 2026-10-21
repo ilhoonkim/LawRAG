@@ -96,16 +96,25 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
         additional = retrieve(store,provider,settings,search_body,variants=extra_queries,
             limit=max(body.limit,min(50,settings.candidate_limit)),expand=False)['evidence']
         candidates = list({source_key(e):e for e in candidates+additional}.values())
-        merged = list({source_key(e):e for e in additional+evidence if source_key(e) not in rejected}.values())
+        merged = {source_key(e):e for e in evidence if source_key(e) not in rejected}
+        for e in additional:
+            key = source_key(e)
+            # A linked article found independently in the new search is now a
+            # search hit with its own score, eligible for a recommendation.
+            if key not in rejected and (key not in merged or merged[key].get('relation')):
+                merged[key] = e
         progress('review')
-        evidence, missing = review(store,provider,settings,body.question,merged,cutoff,rejected)
+        evidence, missing = review(store,provider,settings,body.question,list(merged.values()),cutoff,rejected)
         missing += catalog_gaps
         progress('assess')
         assessment = provider.assess_evidence(body.question,evidence,missing,result['as_of'])
-    # Sorted before generation; the same stable list powers citations and the UI.
+    # Only search hits are recommended in the UI. Keep linked articles in the
+    # LLM context; Provider assigns numeric citations to the visible hits only.
     evidence.sort(key=lambda e:(-e.get('score',0),bool(e.get('relation')),source_key(e)))
-    result.update(evidence=evidence,missing_references=missing,rewritten_query=rewritten,
+    visible_evidence = [e for e in evidence if not e.get('relation')]
+    result.update(evidence=visible_evidence,missing_references=missing,rewritten_query=rewritten,
         original_question=body.question,candidate_count=len(candidates),approved_count=len(evidence),
+        linked_context_count=len(evidence)-len(visible_evidence),
         assessment=assessment,initial_assessment=initial_assessment,additional_search_rounds=rounds,
         additional_queries=extra_queries if rounds else [],fusion=body.fusion or settings.search_fusion)
     if not evidence:

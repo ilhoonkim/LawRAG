@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { api, streamChat } from './shared';
+import { api, streamChat, dateText } from './shared';
 import SearchSettings from './SearchSettings';
 import { JusticeIcon } from './Icons';
+import AnswerMarkdown from './AnswerMarkdown';
 
 function readChats() {
   try {
@@ -16,6 +17,7 @@ const stages = [
 function groupedSources(evidence = []) {
   const groups = new Map();
   evidence.forEach((item, i) => {
+    if (item.relation) return;
     if (!groups.has(item.law_name)) groups.set(item.law_name, { name: item.law_name, items: [], score: 0 });
     const group = groups.get(item.law_name);
     group.items.push({ ...item, citation: i + 1 });
@@ -41,12 +43,20 @@ export default function Chat({ visible, status, onSource }) {
   const [storageError, setStorageError] = useState('');
   const [copied, setCopied] = useState(null);
   const messagesRef = useRef(null);
+  const sourcesRef = useRef(null);
+  const sourceTriggerRef = useRef(null);
   const busyRef = useRef(false);
   const current = chats.find(c => c.id === active);
   const messages = current?.messages || [];
   const evidence = sourceGroup?.items || [];
   useEffect(() => { api('/api/models').then(info => { setModelInfo(info); setModel(prev => prev || info.default); }).catch(() => setModelInfo({ models: ['gpt-4o-mini','gpt-4o','gpt-4.1','gpt-5.4'], warning: '모델 목록 조회 실패 · 모델 ID를 직접 입력할 수 있습니다.' })); }, []);
   useEffect(() => { setSourceGroup(null); }, [active]);
+  useEffect(() => {
+    if (!sourceGroup?.citation) return;
+    const card = sourcesRef.current?.querySelector('[aria-current="true"]');
+    card?.focus({ preventScroll: true });
+    card?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [sourceGroup]);
   useEffect(() => { if (status?.search_fusion) setFusion(status.search_fusion); }, [status?.search_fusion]);
   useEffect(() => { if (status?.threshold != null) setThreshold(status.threshold); }, [status?.threshold]);
   useEffect(() => { try { localStorage.setItem('lawrag.chats', JSON.stringify(chats.slice(0,30))); } catch { setStorageError('대화 저장 공간이 부족합니다.'); } }, [chats]);
@@ -69,6 +79,14 @@ export default function Chat({ visible, status, onSource }) {
     } finally { busyRef.current = false; setBusy(false); }
   }
   async function copy(text, index) { try { await navigator.clipboard.writeText(text); setCopied(index); } catch { setCopied('error'); } }
+  function openSources(group, messageIndex, trigger, citation = null) {
+    sourceTriggerRef.current = trigger;
+    setSourceGroup({ ...group, messageIndex, citation });
+  }
+  function closeSources() {
+    setSourceGroup(null);
+    sourceTriggerRef.current?.focus({ preventScroll: true });
+  }
   return <div className={`chat-page ${sourceGroup ? 'has-sources' : ''}`} hidden={!visible}>
     <aside className="sidebar"><a className="brand" href="#chat">Law<span>RAG</span><small>법령 근거 기반 AI</small></a>
       <button className="nav-button" disabled={busy} onClick={() => setActive(null)}>＋ 새 대화</button>
@@ -82,8 +100,11 @@ export default function Chat({ visible, status, onSource }) {
         {messages.map((m,i) => <article key={i} className={`message ${m.role}`}>
           {m.role === 'assistant' && <div className="message-label">LAW RAG · 법령 에이전트{m.model && <span className="answer-model"> · {m.model}</span>}</div>}
           {m.as_of && <div className="answer-date">기준일 {m.as_of} · 수집된 개정 버전 기준</div>}
-          <div className="answer-text">{m.content}</div>
-          {!!m.evidence?.length && <div className="evidence-chips">{groupedSources(m.evidence).map(group => <button key={group.name} aria-label={`${group.name} 근거 ${group.items.length}개 보기`} aria-expanded={sourceGroup?.messageIndex === i && sourceGroup?.name === group.name} onClick={() => setSourceGroup({ ...group, messageIndex: i })}><JusticeIcon />{group.name} <span>{group.items.length}</span></button>)}</div>}
+          {m.role === 'assistant' ? <AnswerMarkdown content={m.content} evidence={m.evidence} onCitationClick={(number, trigger) => {
+            const group = groupedSources(m.evidence).find(g => g.items.some(item => item.citation === number));
+            if (group) openSources(group, i, trigger, number);
+          }} /> : <div className="answer-text">{m.content}</div>}
+          {m.evidence?.some(item => !item.relation) && <div className="evidence-chips">{groupedSources(m.evidence).map(group => <button key={group.name} aria-label={`${group.name} 근거 ${group.items.length}개 보기`} aria-expanded={sourceGroup?.messageIndex === i && sourceGroup?.name === group.name} onClick={event => openSources(group, i, event.currentTarget)}><JusticeIcon />{group.name} <span>{group.items.length}</span></button>)}</div>}
           {m.role === 'assistant' && <button className="copy-button" onClick={() => copy(m.content,i)}>{copied === i ? '복사됨' : copied === 'error' ? '복사 권한을 확인하세요' : '답변 복사'}</button>}
         </article>)}
         {busy && <div className="message pipeline-progress" role="status" aria-label="답변 처리 단계">
@@ -106,13 +127,13 @@ export default function Chat({ visible, status, onSource }) {
         <button id="send" type="submit" aria-label="질문 전송" disabled={busy}>↑</button></div>
       </form><small>기본은 현재 시행 중인 최신 수집 버전입니다. 과거 조회는 기준일을 지정하세요. 최신 개정 여부는 공식 원문을 확인하세요.</small></div>
     </main>
-    {sourceGroup && <aside className="sources" aria-label="지식 출처">
-      <h2>지식 출처 <button aria-label="지식 출처 닫기" onClick={() => setSourceGroup(null)}>✕</button></h2>
+    {sourceGroup && <aside className="sources" aria-label="지식 출처" ref={sourcesRef}>
+      <h2>지식 출처 <button aria-label="지식 출처 닫기" onClick={closeSources}>✕</button></h2>
       <strong className="source-law-name">{sourceGroup.name}</strong><p className="muted">관련 조문 {evidence.length}개 · 관련도 높은 순</p>
-      {evidence.map((item,i) => <button key={`${item.version}-${item.number}-${i}`} className="source-card" onClick={() => onSource(item)}><strong><JusticeIcon />[{item.citation}] {item.number}{item.title ? `(${item.title})` : ''}</strong>
-        {!item.relation && item.title_score != null && <p>제목 {(item.title_score*100).toFixed(1)} · 본문 {(item.body_score*100).toFixed(1)}</p>}
-        {item.fusion === 'rrf' && <p>내용 적합도 {((item.weighted_score || 0)*100).toFixed(1)}%</p>}
-        <p>{item.relation ? `${item.referenced_by_law || ''} ${item.referenced_by}의 연결 근거 · 연결 조문 점수 ${((item.score || 0)*100).toFixed(1)}` : `${item.fusion === 'rrf' ? 'RRF 점수' : '관련도'} ${((item.score || 0)*100).toFixed(1)}%`} · 시행 {item.effective || '미상'}</p><p>{item.evidence_role === 'supporting' ? '보조 근거' : '직접 근거'}{item.matched_units?.length ? ` · 검색 위치: ${item.matched_units.map(u => u.location).join(', ')}` : ''}</p><span className="source-open">원문 보기 ↗</span></button>)}
+      {evidence.map((item,i) => <button key={`${item.version}-${item.number}-${i}`} className="source-card" aria-current={sourceGroup.citation === item.citation ? 'true' : undefined} onClick={() => onSource(item)}><strong><JusticeIcon />[{item.citation}] {item.number}{item.title ? `(${item.title})` : ''}</strong>
+        <p className="source-relevance">관련도 점수: <b>{((item.score || 0)*100).toFixed(1)}%</b></p>
+        <p className="source-effective">시행일: {dateText(item.effective).replaceAll('-', '.')}</p>
+        <p>{item.evidence_role === 'supporting' ? '보조 근거' : '직접 근거'}{item.matched_units?.length ? ` · 검색 위치: ${item.matched_units.map(u => u.location).join(', ')}` : ''}</p><span className="source-open">원문 보기 ↗</span></button>)}
       <p className="score-note">관련도는 검색 점수이며 법적 정확도의 확률이 아닙니다.</p>
     </aside>}
   </div>;

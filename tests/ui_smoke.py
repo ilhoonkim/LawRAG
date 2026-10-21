@@ -1,6 +1,7 @@
 """Optional React browser regression check. Requires playwright and Chromium."""
 import os
 import json
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -111,6 +112,15 @@ try:
      answer = page.locator('.message.assistant').bounding_box()
      assert abs(bubble['x'] + bubble['width'] - answer['x'] - answer['width']) < 2
      page.screenshot(path=str(artifacts / 'chat-grouped.png'),full_page=True)
+     # Citations open the exact source, retaining the answer's original numbering.
+     citation=page.locator('.message.assistant .citation-link').first
+     expect(citation).to_have_attribute('title','선박안전법 제3조(적용범위)')
+     citation.focus()
+     page.keyboard.press('Enter')
+     expect(page.locator('.source-card[aria-current="true"]')).to_contain_text('[1] 제3조')
+     expect(page.locator('.source-card[aria-current="true"]')).to_be_focused()
+     page.get_by_label('지식 출처 닫기',exact=True).click()
+     expect(citation).to_be_focused()
      page.locator('.evidence-chips button').first.click()
      expect(page.get_by_role('complementary',name='지식 출처')).to_be_visible()
      expect(page.locator('.source-card').first).to_contain_text('제3조')
@@ -144,21 +154,87 @@ try:
      sample = [
        {'law_name':'합성 B법','number':'제1조','score':.95,'title':'최상위','effective':'20200101','version':'b'},
        {'law_name':'합성 A법','number':'제2조','score':.9,'title':'상위','effective':'20200101','version':'a'},
+       {'law_name':'연결 전용 C법','number':'제5조','score':.95,'title':'연결 자료','effective':'20200101','version':'c','relation':'references_article','referenced_by':'제1조'},
        {'law_name':'합성 A법','number':'제3조','score':.7,'title':'하위','effective':'20200101','version':'a'}
      ]
+     markdown_answer = '''## 거래 유형별 준비 서류
+
+**"명시된 서류"**를 기준으로 정리합니다. [1][2][4]
+
+- **계약서 사본** [2]
+  - 조건에 해당할 때 제출합니다.
+- 단독신고사유서 [4]
+
+| 서류 | 적용 조건 |
+| --- | --- |
+| 계약서 | 단독신고 [2] |
+| 지급 증빙 | 해당하는 경우 [4] |
+
+과거 답변의 연결 전용 인용: [3]
+
+> 제출 조건을 함께 확인하세요.
+
+코드 속 번호는 그대로 유지: `[1]`
+
+```text
+**코드 예시** [2]
+```
+
+미확인 번호 [99], [공식 원문](https://www.law.go.kr/), [위험 링크](javascript:alert(1)).
+
+[[1]](https://www.law.go.kr/)
+
+<script>window.markdownExecuted = true</script>
+
+<img src="invalid-image" onerror="window.markdownExecuted = true">
+
+![이미지](https://invalid.example/remote.png)
+'''
      page.route('**/api/chat/stream', lambda route: route.fulfill(status=200, content_type='application/x-ndjson',
-         body=json.dumps({'type':'result','result':{'answer':'합성 검증 답변 [1] [2] [3]','evidence':sample,'as_of':'2026-10-21'}},ensure_ascii=False)+'\n'))
-     page.get_by_label('질문',exact=True).fill('합성 여러 법령 출처 테스트')
+         body=json.dumps({'type':'result','result':{'answer':markdown_answer,'evidence':sample,'as_of':'2026-10-21'}},ensure_ascii=False)+'\n'))
+     page.get_by_label('질문',exact=True).fill('합성 여러 법령 출처 **테스트**')
      page.get_by_role('button',name='질문 전송',exact=True).click()
      chips=page.locator('.message.assistant').last.locator('.evidence-chips button')
      expect(chips).to_have_count(2)
      expect(chips.first).to_contain_text('합성 B법')
+     rendered=page.locator('.message.assistant').last.locator('.markdown-body')
+     expect(rendered.get_by_role('heading',name='거래 유형별 준비 서류',level=2)).to_be_visible()
+     expect(rendered.locator('strong').first).to_have_text('"명시된 서류"')
+     expect(rendered.locator('strong').last).to_have_text('계약서 사본')
+     expect(rendered.locator('ul ul li')).to_have_text('조건에 해당할 때 제출합니다.')
+     expect(rendered.locator('table tbody tr')).to_have_count(2)
+     expect(rendered.locator('blockquote')).to_contain_text('제출 조건')
+     expect(rendered.locator('code').first).to_have_text('[1]')
+     expect(rendered.locator('pre code')).to_contain_text('**코드 예시** [2]')
+     expect(rendered.locator('code .citation-link, a .citation-link')).to_have_count(0)
+     expect(rendered.locator('.citation-link')).to_have_count(7)
+     expect(rendered).not_to_contain_text('[3]')
+     expect(chips.filter(has_text='연결 전용 C법')).to_have_count(0)
+     expect(rendered).to_contain_text('[99]')
+     expect(rendered.locator('a').filter(has_text='위험 링크')).not_to_have_attribute('href', re.compile('javascript:', re.I))
+     expect(rendered.locator('img, script')).to_have_count(0)
+     assert page.evaluate('window.markdownExecuted === undefined')
+     expect(page.locator('.message.user').last).to_contain_text('**테스트**')
+     expect(page.locator('.message.user').last.locator('strong')).to_have_count(0)
+     # A legacy linked-only [3] is hidden; [4] must retain its original mapping.
+     rendered.get_by_role('button',name='근거 4: 합성 A법 제3조(하위) 보기',exact=True).first.click()
+     expect(page.locator('.source-card[aria-current="true"]')).to_contain_text('[4] 제3조')
+     expect(page.locator('.source-law-name')).to_have_text('합성 A법')
+     page.get_by_label('지식 출처 닫기',exact=True).click()
+     rendered.scroll_into_view_if_needed()
+     page.screenshot(path=str(artifacts / 'chat-markdown.png'),full_page=True)
      chips.nth(1).click()
      expect(page.locator('.source-card')).to_have_count(2)
      expect(page.locator('.source-card').first).to_contain_text('[2] 제2조')
-     expect(page.locator('.source-card').last).to_contain_text('[3] 제3조')
+     expect(page.locator('.source-card').last).to_contain_text('[4] 제3조')
      expect(page.locator('.source-card').first).to_contain_text('90.0%')
      expect(page.locator('.source-card').last).to_contain_text('70.0%')
+     expect(page.locator('.source-card').first.locator('.source-relevance')).to_have_text('관련도 점수: 90.0%')
+     expect(page.locator('.source-card').first.locator('.source-relevance b')).to_have_css('color','rgb(36, 107, 255)')
+     expect(page.locator('.source-card').first.locator('.source-effective')).to_have_text('시행일: 2020.01.01')
+     expect(page.locator('.sources')).not_to_contain_text('내용 적합도')
+     expect(page.locator('.sources')).not_to_contain_text('연결 조문 점수')
+     page.screenshot(path=str(artifacts / 'chat-relevance.png'),full_page=True)
      page.get_by_label('지식 출처 닫기',exact=True).click()
      page.set_viewport_size({'width':390,'height':844})
      page.get_by_role('button',name='검색 설정',exact=True).click()
@@ -166,6 +242,8 @@ try:
      assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
      page.keyboard.press('Escape')
      expect(page.get_by_role('dialog',name='검색 설정',exact=True)).to_have_count(0)
+     expect(rendered.locator('table')).to_be_visible()
+     assert rendered.locator('.markdown-table-wrap').evaluate('(el) => el.scrollWidth >= el.clientWidth')
      page.locator('.evidence-chips button').first.click()
      expect(page.get_by_role('complementary',name='지식 출처')).to_be_visible()
      assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
@@ -176,7 +254,7 @@ try:
      assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
      page.screenshot(path=str(artifacts / 'mobile.png'),full_page=True)
      assert not errors,errors
-     print('PASS React: categories, explicit search/version/collect steps, missing-only selection, paging, success/failure history, article anchor popup, historical chat, streamed stages, model selection, right alignment, grouped/sorted sources and citations, page switching/history persistence, mobile source panel, zero JS errors')
+     print('PASS React: categories, collection, history, article popup, chat stages, model/settings, grouped sources, Markdown/CJK emphasis/tables, safe content rendering, clickable citations and focus, mobile layout, zero JS errors')
      browser.close()
 
     print('Screenshots:', artifacts)

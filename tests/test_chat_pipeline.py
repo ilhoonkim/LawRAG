@@ -29,8 +29,8 @@ class PipelineStore:
         assert {r['number'] for r in roots} == {'제1조','제2조','제3조'}
         # A rejected search result must not be reintroduced as a reference.
         return [{**r,'reference_titles':[{'number':'제2조','law_name':'합성법','title':'무관한 조문'}]} for r in roots] + [
-            row(2,.9,'무관한 본문'), {**row(4,.95),'referenced_by':'제1조'},
-            {**row(5,.95,'무관한 본문'),'referenced_by':'제1조'}], [{'law_name':'외부법','number':'별표 1'}]
+            row(2,.9,'무관한 본문'), {**row(4,.95),'referenced_by':'제1조','relation':'references_article'},
+            {**row(5,.95,'무관한 본문'),'referenced_by':'제1조','relation':'references_article'}], [{'law_name':'외부법','number':'별표 1'}]
 
 
 class PipelineProvider:
@@ -58,10 +58,41 @@ def test_four_stages_rejected_refs_removed_sorted_before_answer():
     provider, stages = PipelineProvider(), []
     result = run_chat(PipelineStore(),provider,Settings(),ChatRequest(question='집주인이 필요한 서류는?',limit=2),stages.append)
     assert stages == ['rewrite','search','review','assess','answer']
-    assert [r['number'] for r in result['evidence']] == ['제4조','제1조','제3조']
-    assert result['evidence'] == provider.context
+    assert [r['number'] for r in result['evidence']] == ['제1조','제3조']
+    assert [r['number'] for r in provider.context] == ['제4조','제1조','제3조']
+    assert result['linked_context_count'] == 1
     assert all(not r.get('reference_titles') for r in result['evidence'])
     assert result['generated']
+
+
+def test_linked_only_context_can_answer_without_becoming_a_recommended_source():
+    provider = PipelineProvider()
+    provider.filter_evidence = lambda question, rows: [r for r in rows if r['number']=='제4조']
+    result = run_chat(PipelineStore(),provider,Settings(),ChatRequest(question='집주인이 필요한 서류는?'))
+    assert result['evidence'] == [] and result['generated']
+    assert result['linked_context_count'] == 1 and provider.context[0]['number'] == '제4조'
+
+
+def test_prompt_separates_linked_context_and_numbers_only_visible_sources(monkeypatch):
+    provider = Provider(Settings(api_key='test-only'))
+    calls = []
+    def post(path, payload):
+        calls.append(payload)
+        return {'choices':[{'message':{'content':'확인된 본문 [1]'}}]}
+    monkeypatch.setattr(provider,'post',post)
+    linked = {**row(4,.99,'연결 조문의 전체 본문과 단서'), 'relation':'reverse_reference',
+        'referenced_by_law':'합성법','referenced_by':'제1조',
+        'reference_edges':[{'from_law':'합성법','from_article':'제4조','to_law':'합성법','to_article':'제1조'}]}
+    provider.answer('질문',[linked,row(1,.9),row(3,.8)],[])
+    system, context = calls[-1]['messages'][0]['content'], calls[-1]['messages'][-1]['content']
+    assert '[1] 합성법 제1조(제목1)' in context
+    assert '[2] 합성법 제3조(제목3)' in context
+    assert '연결 참조 C1: 합성법 제4조(제목4)' in context
+    assert '연결 조문의 전체 본문과 단서' in context
+    assert '확장 출발점: 합성법 제1조' in context
+    assert '연결 유형: 역참조; 원문 연결 방향: 합성법 제4조 → 합성법 제1조' in context
+    assert '[3]' not in context
+    assert '연결 참조에는 숫자 번호를 새로 붙이지 말고' in system
 
 
 def test_rejected_everything_does_not_generate():
