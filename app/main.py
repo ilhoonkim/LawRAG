@@ -84,10 +84,11 @@ def create_app(settings=None, provider=None, law_api=None):
         if clarification:
             return {'evidence': [], 'clarification': clarification, 'as_of': None, 'missing_versions': []}
         timeline = store.temporal_versions(cutoff)
-        missing = timeline['missing']
-        named = [r['name'] for r in timeline['versions'] + missing if r['name'] in body.question]
-        if named:
-            missing = [r for r in missing if r['name'] == max(named, key=len)]
+        named = [r['name'] for r in timeline['versions'] + timeline['missing'] if r['name'] in body.question]
+        # Catalog gaps do not establish relevance to an unnamed question. Only
+        # identify a missing governing version when the user names that law.
+        named_law = max(named, key=len) if named else None
+        missing = [r for r in timeline['missing'] if r['name'] == named_law]
         evidence = store.search(body.question, provider, settings.threshold if body.threshold is None else body.threshold,
                                 body.limit, body.mode, as_of=cutoff, title_weight=settings.title_weight,
                                 min_title=settings.min_title_score, min_body=settings.min_body_score)
@@ -106,9 +107,13 @@ def create_app(settings=None, provider=None, law_api=None):
             return {**result, 'answer': f'관련 조문은 찾았지만 참조 자료({names})의 본문이 확보되지 않았습니다. 해당 참조 자료를 확보한 뒤 답변해야 합니다.', 'generated': False}
         if not evidence:
             if result['missing_versions']:
-                answer = '기준일에 적용될 버전이 미수집 상태입니다. 법령관리에서 해당 개정 연혁을 수집한 뒤 다시 질문해 주세요.'
+                targets = ', '.join(dict.fromkeys(
+                    f'{r["name"]} (시행 {r["effective"][:4]}-{r["effective"][4:6]}-{r["effective"][6:8]})'
+                    for r in result['missing_versions']))
+                answer = (f'질문한 법령의 기준일({result["as_of"]}) 적용 버전이 미수집 상태입니다: {targets}. '
+                          '법령관리에서 이 버전을 수집한 뒤 다시 질문해 주세요.')
             else:
-                answer = '설정한 임계치 이상의 근거 조문을 찾지 못했습니다. 기준일에 시행 중인 버전의 수집 여부를 확인하거나 법령명과 질문을 구체적으로 입력해 주세요.'
+                answer = '수집된 법령에서 질문에 답할 만한 근거 조문을 찾지 못했습니다. 법령명이나 질문을 구체적으로 입력해 주세요.'
             return {**result, 'answer': answer, 'generated': False}
         question = f'기준일: {result["as_of"]} (이 날짜에 시행 중인 수집 버전 기준)\n{body.question}'
         answer = provider.answer(question, evidence, [m.model_dump() for m in body.history])

@@ -159,8 +159,34 @@ def test_missing_governing_revision_abstains(client):
     result=client.post('/api/chat',json={'question':'선박안전법에 적용되지 않는 것은?','mode':'keyword','as_of':'2026-10-21'}).json()
     assert not result['generated'] and not result['evidence']
     assert '미수집' in result['answer'] and result['missing_versions'][0]['mst']=='101'
+    assert '선박안전법 (시행 2026-01-01)' in result['answer']
     result=client.post('/api/search',json={'question':'2020년 1월 1일 기준 선박안전법 적용범위','mode':'keyword','threshold':0}).json()
     assert result['as_of']=='2020-01-01' and result['evidence'][0]['effective']=='20200101'
+
+
+def test_unnamed_question_does_not_blame_unrelated_catalog_gaps(client):
+    # The failed retrieval is real; its cause must not be guessed from all laws.
+    client.get('/api/management/revisions?source=api&query=선박안전법')
+    response = client.post('/api/chat',json={
+        'question':'전세사기 당했는데 서울에선 얼마까지 보호되나요',
+        'mode':'keyword','as_of':'2026-10-21'}).json()
+    assert not response['generated'] and not response['evidence']
+    assert response['missing_versions'] == []
+    assert '미수집' not in response['answer']
+    assert '근거 조문을 찾지 못했습니다' in response['answer']
+
+
+def test_latest_effective_version_remains_applicable_until_next_revision(client):
+    client.get('/api/management/revisions?source=api&query=선박안전법')
+    client.post('/api/management/collections',json={'items':[item('101')]})
+    # Another law's missing revision must not block this generic question.
+    with client.app.state.store.connect() as db:
+        db.execute("INSERT INTO revision_catalog VALUES('law','777','미수집다른법','20270101','20260101')")
+    response = client.post('/api/chat',json={
+        'question':'적용되지 않는 것은?', 'mode':'keyword',
+        'as_of':'2028-10-21','threshold':0}).json()
+    assert response['generated'] and response['missing_versions'] == []
+    assert response['evidence'][0]['effective'] == '20260101'
 
 
 @pytest.mark.parametrize('question', ['2020년 선박안전법 적용범위','2020-01-01부터 2021-01-01까지 선박안전법','작년 당시 선박안전법','2020년 2월 31일 기준'])
