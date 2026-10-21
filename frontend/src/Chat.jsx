@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, streamChat, dateText } from './shared';
 import SearchSettings from './SearchSettings';
-import { JusticeIcon } from './Icons';
+import { JusticeIcon, TrashIcon } from './Icons';
 import AnswerMarkdown from './AnswerMarkdown';
 
 function readChats() {
@@ -45,6 +45,7 @@ export default function Chat({ visible, status, onSource }) {
   const messagesRef = useRef(null);
   const sourcesRef = useRef(null);
   const sourceTriggerRef = useRef(null);
+  const newChatRef = useRef(null);
   const busyRef = useRef(false);
   const current = chats.find(c => c.id === active);
   const messages = current?.messages || [];
@@ -87,11 +88,24 @@ export default function Chat({ visible, status, onSource }) {
     setSourceGroup(null);
     sourceTriggerRef.current?.focus({ preventScroll: true });
   }
+  function deleteChat(chat) {
+    if (busyRef.current || !confirm(`이 대화를 삭제할까요?\n\n${chat.title.length > 120 ? chat.title.slice(0,120) + '…' : chat.title}`)) return;
+    setChats(prev => prev.filter(item => item.id !== chat.id));
+    if (active === chat.id) {
+      setActive(null);
+      setSourceGroup(null);
+      setCopied(null);
+    }
+    newChatRef.current?.focus({ preventScroll: true });
+  }
   return <div className={`chat-page ${sourceGroup ? 'has-sources' : ''}`} hidden={!visible}>
     <aside className="sidebar"><a className="brand" href="#chat">Law<span>RAG</span><small>법령 근거 기반 AI</small></a>
-      <button className="nav-button" disabled={busy} onClick={() => setActive(null)}>＋ 새 대화</button>
-      <div className="sidebar-label">대화 이력 <button disabled={busy} onClick={() => { if (confirm('이 브라우저에 저장된 대화를 모두 삭제할까요?')) { setChats([]); setActive(null); } }}>삭제</button></div>
-      <nav id="history">{chats.map(c => <button key={c.id} className={c.id === active ? 'active' : ''} disabled={busy} onClick={() => setActive(c.id)}>{c.title}</button>)}</nav>
+      <button className="nav-button" ref={newChatRef} disabled={busy} onClick={() => setActive(null)}>＋ 새 대화</button>
+      <div className="sidebar-label">대화 이력 <button disabled={busy || !chats.length} onClick={() => { if (confirm('이 브라우저에 저장된 대화를 모두 삭제할까요?')) { setChats([]); setActive(null); } }}>전체 삭제</button></div>
+      <nav id="history" aria-label="대화 이력">{chats.map(c => <div key={c.id} className={`history-entry ${c.id === active ? 'active' : ''}`}>
+        <button className="history-title" title={c.title} aria-current={c.id === active ? 'page' : undefined} disabled={busy} onClick={() => setActive(c.id)}>{c.title}</button>
+        <button className="history-delete" type="button" title="대화 삭제" aria-label={`${c.title} 대화 삭제`} disabled={busy} onClick={() => deleteChat(c)}><TrashIcon /></button>
+      </div>)}</nav>
       <div className="sidebar-footer">법령을 찾고, 근거로 답합니다.<br />대화는 이 브라우저에 저장됩니다.</div>
     </aside>
     <main><header><span className="agent-pill">◉ 법령 검색 에이전트</span><div className="chat-header-actions"><span id="connection" role="status">{storageError || (status ? `${status.laws.length}개 법령 · ${status.llm_configured ? 'AI 연결 설정됨' : 'AI 키 미설정'}` : '서버 상태 확인 중')}</span><button className="mobile-new-chat" disabled={busy} onClick={() => setActive(null)}>새 대화</button><SearchSettings mode={mode} fusion={fusion} threshold={threshold} disabled={busy} onApply={value => { setMode(value.mode); setFusion(value.fusion); setThreshold(value.threshold); }} /></div></header>

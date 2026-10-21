@@ -9,6 +9,9 @@ export function LawIcon() {
 export function JusticeIcon() {
   return <svg className="law-evidence-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v18M7 21h10M3 7l9-4 9 4"/><path d="m2 16 3-8 3 8c-1.7 1.3-4.3 1.3-6 0Zm14 0 3-8 3 8c-1.7 1.3-4.3 1.3-6 0Z"/></svg>;
 }
+export function TrashIcon() {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"/></svg>;
+}
 export function HomeIcon() {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m3 10 9-7 9 7v10H3Z"/><path d="M9 20v-7h6v7"/></svg>;
 }

@@ -101,6 +101,7 @@ try:
      page.get_by_label('질문',exact=True).fill('2020년 6월 1일 기준 선박안전법에 적용되지 않는 것은?')
      page.get_by_role('button',name='질문 전송',exact=True).click()
      expect(page.locator('.pipeline-progress .current')).to_contain_text('질문 재조정 중')
+     expect(page.locator('#history .history-delete').first).to_be_disabled()
      expect(page.locator('.pipeline-progress li')).to_have_count(5)
      expect(page.locator('.pipeline-progress .current')).to_contain_text('법조항 후보군 검토 중')
      expect(page.locator('.pipeline-progress .current')).to_contain_text('근거 법조항 기반 답변 생성 중')
@@ -135,7 +136,7 @@ try:
      page.get_by_role('link',name='채팅',exact=True).click()
      expect(page.locator('.evidence-chips button').first).to_be_visible()
      page.reload()
-     page.locator('#history button').first.click()
+     page.locator('#history .history-title').first.click()
      expect(page.locator('.evidence-chips button').first).to_be_visible()
      expect(page.get_by_label('검색 결합 방식',exact=True)).to_have_count(0)
      page.get_by_role('button',name='검색 설정',exact=True).click()
@@ -253,8 +254,62 @@ try:
      expect(page.get_by_role('button',name='수집하기',exact=True)).to_be_visible()
      assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
      page.screenshot(path=str(artifacts / 'mobile.png'),full_page=True)
+     # Individual deletion must preserve other conversations and persist across
+     # reloads. Exercise cancel, deleting another chat, then the active chat.
+     page.set_viewport_size({'width':1480,'height':1000})
+     long_title='서울에서 주택 임대차 계약을 체결할 때 보증금 반환과 필요한 서류를 확인하고 싶습니다'
+     history_chats=[
+       {'id':'keep-active','title':long_title,'messages':[
+         {'role':'user','content':long_title},
+         {'role':'assistant','content':'합성 보증금 반환 안내 [1]','evidence':sample[:1]}]},
+       {'id':'delete-other','title':'삭제할 다른 대화','messages':[{'role':'user','content':'다른 질문'}]},
+       {'id':'keep-other','title':'남겨 둘 대화','messages':[{'role':'user','content':'보존할 질문'}]},
+     ]
+     page.evaluate('(chats) => localStorage.setItem("lawrag.chats", JSON.stringify(chats))',history_chats)
+     page.goto(base_url + '/#chat')
+     page.reload()
+     history=page.get_by_role('navigation',name='대화 이력',exact=True)
+     expect(history.locator('.history-title')).to_have_count(3)
+     history.get_by_role('button',name=long_title,exact=True).click()
+     expect(history.locator('.history-title[aria-current="page"]')).to_have_text(long_title)
+     expect(history.locator('.history-title').first).to_have_attribute('title',long_title)
+     page.locator('.evidence-chips button').first.click()
+     delete_other=history.get_by_role('button',name='삭제할 다른 대화 대화 삭제',exact=True)
+     page.once('dialog',lambda dialog:dialog.dismiss())
+     delete_other.click()
+     expect(history.locator('.history-title')).to_have_count(3)
+     page.once('dialog',lambda dialog:dialog.accept())
+     delete_other.click()
+     expect(history.locator('.history-title')).to_have_count(2)
+     expect(history.locator('.history-title[aria-current="page"]')).to_have_text(long_title)
+     expect(page.locator('.message.assistant')).to_contain_text('합성 보증금 반환 안내')
+     expect(page.get_by_role('complementary',name='지식 출처')).to_be_visible()
+     page.get_by_label('지식 출처 닫기',exact=True).click()
+     page.screenshot(path=str(artifacts / 'chat-history.png'),full_page=True)
+     page.reload()
+     expect(history.locator('.history-title')).to_have_count(2)
+     assert page.evaluate('JSON.parse(localStorage.getItem("lawrag.chats")).map(c => c.id)')==['keep-active','keep-other']
+     history.get_by_role('button',name=long_title,exact=True).click()
+     page.locator('.evidence-chips button').first.click()
+     page.once('dialog',lambda dialog:dialog.accept())
+     history.get_by_role('button',name=long_title+' 대화 삭제',exact=True).click()
+     expect(history.locator('.history-title')).to_have_count(1)
+     expect(page.locator('.welcome')).to_be_visible()
+     expect(page.get_by_role('complementary',name='지식 출처')).to_have_count(0)
+     expect(page.get_by_role('button',name='＋ 새 대화',exact=True)).to_be_focused()
+     page.reload()
+     expect(history.locator('.history-title')).to_have_text('남겨 둘 대화')
+     history.get_by_role('button',name='남겨 둘 대화',exact=True).click()
+     expect(page.locator('.message.user')).to_have_text('보존할 질문')
+     page.once('dialog',lambda dialog:dialog.accept())
+     history.get_by_role('button',name='남겨 둘 대화 대화 삭제',exact=True).click()
+     expect(history.locator('.history-title')).to_have_count(0)
+     expect(page.locator('.welcome')).to_be_visible()
+     expect(page.get_by_role('button',name='전체 삭제',exact=True)).to_be_disabled()
+     page.reload()
+     expect(history.locator('.history-title')).to_have_count(0)
      assert not errors,errors
-     print('PASS React: categories, collection, history, article popup, chat stages, model/settings, grouped sources, Markdown/CJK emphasis/tables, safe content rendering, clickable citations and focus, mobile layout, zero JS errors')
+     print('PASS React: categories, collection, history, article popup, chat stages, model/settings, grouped sources, Markdown/CJK emphasis/tables, safe content rendering, clickable citations and focus, mobile layout, individual chat deletion/cancel/persistence, zero JS errors')
      browser.close()
 
     print('Screenshots:', artifacts)
