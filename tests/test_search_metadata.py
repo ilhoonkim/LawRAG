@@ -1,18 +1,22 @@
 """Discovery metadata must improve recall without becoming legal evidence."""
 from dataclasses import replace
 from datetime import date
+import errno
 import json
+from pathlib import Path
+import sqlite3
 import pytest
 import sqlite_vec
 
 from app.config import Settings
+from app import enrich_metadata
 from app.enrich_metadata import backfill, status
 from app.laws import SetupError
 from app.main import ChatRequest
 from app.chat_pipeline import run_chat
 from app.management import Management
 from app.provider import Provider
-from app.search_metadata import generate, prepare
+from app.search_metadata import MetadataGenerationError, generate, prepare
 from app.store import Store
 from test_enhanced_retrieval import xml
 from test_workflow import FakeProvider
@@ -285,3 +289,162 @@ def test_generated_search_text_never_enters_actual_verification_or_answer_prompt
     assert len(prompts) == 2
     assert all(BODY in json.dumps(p,ensure_ascii=False) for p in prompts)
     assert all('GENERATED_ONLY_MARKER' not in json.dumps(p) for p in prompts)
+
+
+def documents(count):
+    return [{'law_name':'합성법','number':f'제{i}조','title':f'제목 {i}','body':BODY+str(i)}
+            for i in range(1,count+1)]
+
+
+@pytest.mark.parametrize('broken',['one_item','truncated'])
+def test_generation_retries_only_unvalidated_ids_in_smaller_batches(monkeypatch,broken):
+    provider, calls = Provider(Settings(api_key='synthetic-key')), []
+    def post(path,request):
+        payload = json.loads(request['messages'][-1]['content'])
+        calls.append(payload)
+        items = [{'id':doc['id'],'summary':doc['number'],'questions':QUESTIONS} for doc in payload['articles']]
+        if len(calls) == 1:
+            if broken == 'truncated':
+                return response([],reason='length')
+            items[2]['summary'] = '가'*1801
+        return response(items)
+    monkeypatch.setattr(provider,'post',post)
+    result = generate(provider,documents(5))
+    ids = [[doc['id'] for doc in call['articles']] for call in calls]
+    assert ids == ([[1,2,3,4,5],[3]] if broken == 'one_item' else [[1,2,3,4,5],[1,2],[3,4],[5]])
+    assert [item['summary'] for item in result] == [f'제{i}조' for i in range(1,6)]
+    assert 'retry_requirements' in calls[1]
+    assert all(doc['body'] == documents(5)[doc['id']-1]['body'] for call in calls for doc in call['articles'])
+
+
+@pytest.mark.parametrize('answer,reason',[
+    (response([],reason='length'),'출력 토큰 한도'),
+    (response([{'id':1,'summary':'가'*1801,'questions':[]}]),'요약 내용 또는 길이'),
+    (response([{'id':1,'summary':'요약','questions':['가'*201]}]),'예상 질문 내용 또는 개수'),
+    (response([]),'조문 id가 누락'),
+    (response([{'id':1,'summary':'요약','questions':[]}]*2),'조문 id가 중복'),
+    ({'choices':[{'message':{'content':'invalid-json SECRET_MARKER'}}]},'응답 JSON'),
+])
+def test_metadata_failure_reports_safe_specific_reason(monkeypatch,answer,reason):
+    provider = Provider(Settings(api_key='synthetic-key'))
+    monkeypatch.setattr(provider,'post',lambda *args:answer)
+    with pytest.raises(MetadataGenerationError,match=reason) as failure:
+        generate(provider,documents(1))
+    assert 'SECRET_MARKER' not in str(failure.value)
+
+
+@pytest.mark.parametrize('api_retry_failure',[False,True])
+def test_partial_batch_successes_are_indexed_and_only_failed_article_is_retried(tmp_path,monkeypatch,api_retry_failure):
+    store, provider, calls = Store(tmp_path), MetadataProvider(), []
+    raw = xml('합성법',[(str(i),f'제목 {i}',BODY+str(i)) for i in range(1,6)])
+    store.ingest(raw,FakeProvider(),archive_only=True)
+    with store.connect() as db:
+        before = [dict(row) for row in db.execute('SELECT * FROM version_articles')]
+    broken = True
+    def post(path,request):
+        docs = json.loads(request['messages'][-1]['content'])['articles']
+        calls.append([doc['number'] for doc in docs])
+        if api_retry_failure and len(calls) == 2:
+            raise SetupError('AI API 요청 실패 [시간 초과]')
+        return response([{'id':doc['id'],'summary':'' if broken and doc['number']=='제3조' else SUMMARY,
+                          'questions':QUESTIONS} for doc in docs])
+    monkeypatch.setattr(provider,'post',post,raising=False)
+    monkeypatch.setattr(provider,'generate_search_metadata',lambda docs:generate(provider,docs))
+    report = backfill(store,provider,tmp_path/'report.json',notify=lambda _:None)
+    assert (report['completed'],report['failed']) == (4,1)
+    assert status(store) == {'total':5,'completed':4,'failed':1,'pending':0}
+    assert calls == [[f'제{i}조' for i in range(1,6)],['제3조']]
+    with store.connect() as db:
+        assert [dict(row) for row in db.execute('SELECT * FROM version_articles')] == before
+        assert db.execute('SELECT count(*) FROM search_metadata').fetchone()[0] == 4
+        assert db.execute('SELECT count(*) FROM search_metadata_vectors').fetchone()[0] == 12
+    broken = False
+    resumed = backfill(store,provider,tmp_path/'report.json',notify=lambda _:None)
+    assert (resumed['completed'],resumed['skipped'],resumed['failed']) == (1,4,0)
+    assert len(calls) == 3 and calls[-1] == ['제3조']
+    assert status(store)['completed'] == 5
+
+
+def test_report_windows_sharing_violation_retries_and_preserves_old_export(tmp_path,monkeypatch):
+    path = tmp_path/'report.json'
+    path.write_text('previous report')
+    replace, attempts = Path.replace, []
+    def locked_then_ready(temporary,destination):
+        attempts.append(temporary)
+        if len(attempts) < 3:
+            assert path.read_text() == 'previous report'
+            error = PermissionError(errno.EACCES,'SECRET_MARKER')
+            error.winerror = 32
+            raise error
+        return replace(temporary,destination)
+    monkeypatch.setattr(Path,'replace',locked_then_ready)
+    monkeypatch.setattr(enrich_metadata.time,'sleep',lambda _:None)
+    enrich_metadata.write_report(path,{'completed':5550})
+    assert json.loads(path.read_text()) == {'completed':5550}
+    assert len(attempts) == 3 and not list(tmp_path.glob('*.tmp'))
+
+
+@pytest.mark.parametrize('recover_during_run',[False,True])
+def test_report_failure_does_not_abort_db_work_or_cause_repeat_api_calls(tmp_path,monkeypatch,recover_during_run):
+    store, provider, notices = Store(tmp_path), MetadataProvider(), []
+    store.ingest(xml('합성법',[(str(i),f'제목 {i}',BODY+str(i)) for i in range(1,12)]),FakeProvider(),archive_only=True)
+    path = tmp_path/'report.json'
+    path.write_text('previous report')
+    writer, calls = enrich_metadata.write_report, []
+    def fail_report(path,report):
+        calls.append(len(report['items']))
+        if not recover_during_run or len(calls)==1:
+            error = PermissionError(errno.EACCES,'SECRET_MARKER')
+            error.winerror = 32
+            raise error
+        writer(path,report)
+    monkeypatch.setattr(enrich_metadata,'write_report',fail_report)
+    result = backfill(store,provider,path,notify=notices.append)
+    assert result['completed'] == 11 and status(store)['completed'] == 11
+    warnings = [notice for notice in notices if '보고서 저장 경고' in notice]
+    assert len(warnings) == 1 and 'winerror=32' in warnings[0] and 'SECRET_MARKER' not in warnings[0]
+    if recover_during_run:
+        assert 'report_error' not in result and json.loads(path.read_text()) == result
+    else:
+        assert 'report_error' in result and path.read_text() == 'previous report'
+    api_counts = (len(provider.generations),len(provider.embeddings))
+    monkeypatch.setattr(enrich_metadata,'write_report',writer)
+    resumed = backfill(store,provider,path,notify=lambda _:None)
+    assert resumed['skipped'] == 11 and not resumed['failed']
+    assert (len(provider.generations),len(provider.embeddings)) == api_counts
+    assert json.loads(path.read_text()) == resumed
+
+
+def test_db_commit_failure_stops_new_api_work_and_resume_reuses_cache(tmp_path,monkeypatch):
+    store, provider = Store(tmp_path), MetadataProvider()
+    store.ingest(xml('합성법',[(str(i),f'제목 {i}',BODY+str(i)) for i in range(1,12)]),FakeProvider(),archive_only=True)
+    bind = enrich_metadata.bind
+    def fail_bind(*args):
+        raise sqlite3.OperationalError('synthetic disk full')
+    monkeypatch.setattr(enrich_metadata,'bind',fail_bind)
+    path = tmp_path/'report.json'
+    with pytest.raises(sqlite3.OperationalError):
+        backfill(store,provider,path,notify=lambda _:None)
+    assert len(provider.generations) == len(provider.embeddings) == 1
+    assert status(store) == {'total':11,'completed':0,'failed':0,'pending':11}
+    report = json.loads(path.read_text())
+    assert report['completed'] == 0 and 'interrupted_at' in report
+    monkeypatch.setattr(enrich_metadata,'bind',bind)
+    resumed = backfill(store,provider,path,notify=lambda _:None)
+    assert resumed['completed'] == 11
+    assert [len(batch) for batch in provider.generations] == [5,5,1]
+    assert len(provider.embeddings) == 3
+
+
+def test_keyboard_interrupt_after_generation_resumes_without_regenerating(tmp_path,monkeypatch):
+    store, provider = Store(tmp_path), MetadataProvider()
+    store.ingest(RAW,FakeProvider(),archive_only=True)
+    embed = provider.embed
+    def interrupt(*args):
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(provider,'embed',interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        backfill(store,provider,tmp_path/'report.json',notify=lambda _:None)
+    monkeypatch.setattr(provider,'embed',embed)
+    result = backfill(store,provider,tmp_path/'report.json',notify=lambda _:None)
+    assert result['completed'] == 1 and len(provider.generations) == 1
