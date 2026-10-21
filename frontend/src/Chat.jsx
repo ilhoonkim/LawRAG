@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, streamChat } from './shared';
 import SearchSettings from './SearchSettings';
+import { JusticeIcon } from './Icons';
 
 function readChats() {
   try {
@@ -82,7 +83,7 @@ export default function Chat({ visible, status, onSource }) {
           {m.role === 'assistant' && <div className="message-label">LAW RAG · 법령 에이전트{m.model && <span className="answer-model"> · {m.model}</span>}</div>}
           {m.as_of && <div className="answer-date">기준일 {m.as_of} · 수집된 개정 버전 기준</div>}
           <div className="answer-text">{m.content}</div>
-          {!!m.evidence?.length && <div className="evidence-chips">{groupedSources(m.evidence).map(group => <button key={group.name} aria-label={`${group.name} 근거 ${group.items.length}개 보기`} aria-expanded={sourceGroup?.messageIndex === i && sourceGroup?.name === group.name} onClick={() => setSourceGroup({ ...group, messageIndex: i })}>▤ {group.name} <span>{group.items.length}</span></button>)}</div>}
+          {!!m.evidence?.length && <div className="evidence-chips">{groupedSources(m.evidence).map(group => <button key={group.name} aria-label={`${group.name} 근거 ${group.items.length}개 보기`} aria-expanded={sourceGroup?.messageIndex === i && sourceGroup?.name === group.name} onClick={() => setSourceGroup({ ...group, messageIndex: i })}><JusticeIcon />{group.name} <span>{group.items.length}</span></button>)}</div>}
           {m.role === 'assistant' && <button className="copy-button" onClick={() => copy(m.content,i)}>{copied === i ? '복사됨' : copied === 'error' ? '복사 권한을 확인하세요' : '답변 복사'}</button>}
         </article>)}
         {busy && <div className="message pipeline-progress" role="status" aria-label="답변 처리 단계">
@@ -108,7 +109,7 @@ export default function Chat({ visible, status, onSource }) {
     {sourceGroup && <aside className="sources" aria-label="지식 출처">
       <h2>지식 출처 <button aria-label="지식 출처 닫기" onClick={() => setSourceGroup(null)}>✕</button></h2>
       <strong className="source-law-name">{sourceGroup.name}</strong><p className="muted">관련 조문 {evidence.length}개 · 관련도 높은 순</p>
-      {evidence.map((item,i) => <button key={`${item.version}-${item.number}-${i}`} className="source-card" onClick={() => onSource(item)}><strong>▤ [{item.citation}] {item.number}{item.title ? `(${item.title})` : ''}</strong>
+      {evidence.map((item,i) => <button key={`${item.version}-${item.number}-${i}`} className="source-card" onClick={() => onSource(item)}><strong><JusticeIcon />[{item.citation}] {item.number}{item.title ? `(${item.title})` : ''}</strong>
         {!item.relation && item.title_score != null && <p>제목 {(item.title_score*100).toFixed(1)} · 본문 {(item.body_score*100).toFixed(1)}</p>}
         {item.fusion === 'rrf' && <p>내용 적합도 {((item.weighted_score || 0)*100).toFixed(1)}%</p>}
         <p>{item.relation ? `${item.referenced_by_law || ''} ${item.referenced_by}의 연결 근거 · 연결 조문 점수 ${((item.score || 0)*100).toFixed(1)}` : `${item.fusion === 'rrf' ? 'RRF 점수' : '관련도'} ${((item.score || 0)*100).toFixed(1)}%`} · 시행 {item.effective || '미상'}</p><p>{item.evidence_role === 'supporting' ? '보조 근거' : '직접 근거'}{item.matched_units?.length ? ` · 검색 위치: ${item.matched_units.map(u => u.location).join(', ')}` : ''}</p><span className="source-open">원문 보기 ↗</span></button>)}

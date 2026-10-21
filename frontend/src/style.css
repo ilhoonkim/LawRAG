@@ -32,6 +32,7 @@ body{display:block}#root{display:grid;grid-template-columns:84px minmax(0,1fr);h
 .answer-model{font-weight:400;letter-spacing:0}
 .evidence-chips button[aria-expanded=true]{border-color:#648fff;background:#f1f6ff}
 .evidence-chips button span{margin-left:6px;color:#487ddd}
+.law-evidence-icon{width:17px;height:17px;vertical-align:-3px;margin-right:6px;color:#527391}
 .chat-page .sources{display:block;background:#fff;min-width:0}
 .sources h2 button{background:transparent;padding:4px 7px;font-size:13px}
 .source-law-name{display:block;font-size:13px;line-height:1.7;overflow-wrap:anywhere}

@@ -6,6 +6,9 @@ export function ChatIcon() {
 export function LawIcon() {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 3h14v18H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M7 3v18M10 8h6M10 12h6M3 17h16"/></svg>;
 }
+export function JusticeIcon() {
+  return <svg className="law-evidence-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v18M7 21h10M3 7l9-4 9 4"/><path d="m2 16 3-8 3 8c-1.7 1.3-4.3 1.3-6 0Zm14 0 3-8 3 8c-1.7 1.3-4.3 1.3-6 0Z"/></svg>;
+}
 export function HomeIcon() {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m3 10 9-7 9 7v10H3Z"/><path d="M9 20v-7h6v7"/></svg>;
 }
