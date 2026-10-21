@@ -9,7 +9,6 @@ export default function CollectionDialog({ initialQuery, initialKind, onClose, o
   const [selectedName,setSelectedName] = useState('');
   const [versions,setVersions] = useState({items:[],total:0,page:1});
   const [selected,setSelected] = useState(new Set());
-  const [keywordOnly,setKeywordOnly] = useState(false);
   const [loading,setLoading] = useState(false);
   const [submitting,setSubmitting] = useState(false);
   const [message,setMessage] = useState('');
@@ -23,7 +22,7 @@ export default function CollectionDialog({ initialQuery, initialKind, onClose, o
     const id=++generation.current;
     setSearch(criteria);setLoading(true);setSelectedName('');setVersions({items:[],total:0,page:1});setSelected(new Set());setCandidates({names:[],total:0,page});setMessage('법령명을 검색하고 있습니다…');
     try {
-      const result=await api(`/api/management/revisions?${new URLSearchParams({query:criteria.query,kind:criteria.kind,page:String(page),source:'api'})}`);
+      const result=await api(`/api/management/names?${new URLSearchParams({query:criteria.query,kind:criteria.kind,page:String(page),source:'api'})}`);
       if(id!==generation.current)return;
       setCandidates({names:[...new Set(result.items.map(r=>r.name))],total:result.total,page});
       setMessage(result.items.length?'법령명을 선택하면 개정 버전을 조회합니다.':'검색 결과가 없습니다.');
@@ -35,7 +34,7 @@ export default function CollectionDialog({ initialQuery, initialKind, onClose, o
     try {
       const result=await api(`/api/management/revisions?${new URLSearchParams({query:name,kind:search.kind,page:String(page),source:'api'})}`);
       if(id!==generation.current)return;
-      const items=result.items.filter(r=>r.name===name);
+      const items=result.items;
       const checked=new Set(items.filter(selectable).map(rowKey));
       setVersions({items,total:result.total,page});setSelected(checked);
       setMessage(checked.size?`이 페이지의 미수집 버전 ${checked.size}건을 선택했습니다. 수집 시작을 눌러 진행하세요.`:'이 페이지에 미수집 버전이 없습니다. 다른 페이지도 확인할 수 있습니다.');
@@ -60,7 +59,7 @@ export default function CollectionDialog({ initialQuery, initialKind, onClose, o
     if(!rows.length||submitting)return;
     setSubmitting(true);
     try {
-      const result=await api('/api/management/collections',{items:rows.map(collectionItem),keyword_only:keywordOnly});
+      const result=await api('/api/management/collections',{items:rows.map(collectionItem)});
       setSelected(new Set());setVersions(prev=>({...prev,items:prev.items.map(r=>rows.some(x=>rowKey(x)===rowKey(r))?{...r,collection_status:'queued'}:r)}));
       setMessage(`${result.queued}건을 수집 대기열에 등록했습니다. 수집 이력에서 진행 상황을 확인하세요.`);onQueued();
     } catch(e) {setMessage(e.message);} finally {setSubmitting(false);}
@@ -73,14 +72,14 @@ export default function CollectionDialog({ initialQuery, initialKind, onClose, o
       </form>
       <div className="collection-candidates">{candidates.names.map(name=><button key={name} disabled={loading||submitting} onClick={()=>findVersions(name)}>{name} · 버전 조회</button>)}</div>
       <Pagination page={candidates.page} total={candidates.total} onChange={p=>findNames(p)} label="법령 검색 페이지" disabled={loading||submitting}/>
-      <div className="collection-version-heading"><h3>{selectedName?`${selectedName} 개정 버전`:'개정 버전'}</h3><span className="table-total">API 관련 결과 {versions.total}건</span></div>
+      <div className="collection-version-heading"><h3>{selectedName?`${selectedName} 개정 버전`:'개정 버전'}</h3><span className="table-total">개정 버전 {versions.total}건</span></div>
       <p className="collection-explanation">현재 페이지의 미수집 버전만 자동 체크됩니다. 페이지를 바꾸면 선택이 초기화됩니다. 필요한 대상만 선택하세요.</p>
       <div className="table-scroll"><table className="law-table"><thead><tr><th><input ref={allRef} type="checkbox" aria-label="조회된 미수집 버전 모두 선택" checked={all} disabled={!eligible.length||submitting} onChange={e=>setSelected(new Set(e.target.checked?eligible.map(rowKey):[]))}/></th><th>법령명</th><th>공포·발령일자</th><th>시행일자</th><th>수집 상태</th></tr></thead><tbody>
         {versions.items.map(row=><tr key={rowKey(row)}><td><input type="checkbox" aria-label={`${row.name} ${dateText(row.effective)} 수집`} disabled={!selectable(row)||submitting} checked={selected.has(rowKey(row))} onChange={e=>toggle(row,e.target.checked)}/></td><td>{row.name}</td><td>{dateText(row.promulgated)}</td><td>{dateText(row.effective)}</td><td><Badge status={row.version?'completed':row.collection_status}/></td></tr>)}
         {!versions.items.length&&<EmptyRow columns={5}>{loading?'조회 중입니다…':selectedName?'조회된 개정 버전이 없습니다.':'법령명을 검색하고 버전을 조회하세요.'}</EmptyRow>}
       </tbody></table></div>
       <Pagination page={versions.page} total={versions.total} onChange={p=>findVersions(selectedName,p)} label="수집할 버전 페이지" disabled={loading||submitting}/>
-      <p id="collection-status" role="status">{message}</p><div className="collection-footer"><label><input type="checkbox" checked={keywordOnly} onChange={e=>setKeywordOnly(e.target.checked)} disabled={submitting}/> 임베딩 없이 수집</label><span>{selected.size}건 선택</span><button className="primary-button" disabled={!selected.size||loading||submitting} onClick={start}>{submitting?'등록 중…':'수집 시작'}</button></div>
+      <p id="collection-status" role="status">{message}</p><div className="collection-footer"><span className="muted">본문 수집 후 제목·본문 임베딩을 생성합니다.</span><span>{selected.size}건 선택</span><button className="primary-button" disabled={!selected.size||loading||submitting} onClick={start}>{submitting?'등록 중…':'수집 시작'}</button></div>
     </div>
   </Modal>;
 }

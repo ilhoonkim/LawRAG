@@ -2,6 +2,8 @@
 import hashlib
 import html
 import re
+from time import monotonic
+import threading
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from .references import Annex, parse_annexes, article_links, reference_target
@@ -137,6 +139,8 @@ def render_html(law: Law) -> str:
 class LawAPI:
     def __init__(self, oc):
         self.oc = oc
+        self._revision_cache = {}
+        self._revision_lock = threading.Lock()
 
     def request(self, endpoint, **params):
         if not self.oc:
@@ -151,9 +155,44 @@ class LawAPI:
             raise SetupError('법령 API 요청 실패: 네트워크, OC 및 공동활용 API 권한을 확인하세요.') from None
 
     def search(self, query, page=1, kind='law', revisions=False, display=30):
-        params = {'query': query, 'display': display, 'page': page, 'target': kind}
-        if kind == 'law' and revisions:
-            params['nw'] = 3
+        if not revisions:
+            return self._search_page(query, page, kind, display)
+        # nw=3 alone is not the complete amendment history. Merge historical,
+        # current and scheduled scopes, deduplicating by the API version ID.
+        key = (query, kind)
+        with self._revision_lock:
+            cached = self._revision_cache.get(key)
+            if cached and monotonic() - cached[0] < 60:
+                rows = cached[1]
+            else:
+                merged = {}
+                for scope in ((1, 2, 3) if kind == 'law' else (1, 2)):
+                    seen = set()
+                    for current_page in range(1, 201):
+                        result = self._search_page(query, current_page, kind, 100, scope)
+                        items = result['laws']
+                        total = int(result['total'])
+                        signature = tuple(r['id'] for r in items)
+                        if (not items and (current_page - 1) * 100 < total) or (items and signature in seen):
+                            raise ValueError('API 연혁 페이지가 누락되거나 반복되어 전체 버전을 확인하지 못했습니다.')
+                        seen.add(signature)
+                        for row in items:
+                            merged[row['id']] = row
+                        if current_page * 100 >= total:
+                            break
+                    else:
+                        raise ValueError('연혁 조회가 200페이지를 초과했습니다. 법령명을 구체적으로 입력하세요.')
+                rows = sorted(merged.values(), key=lambda r: (r['effective'], r['promulgated'], r['id']), reverse=True)
+                # Keep a small, short-lived cache so UI paging does not re-fetch everything.
+                if len(self._revision_cache) >= 32:
+                    self._revision_cache.pop(next(iter(self._revision_cache)))
+                self._revision_cache[key] = (monotonic(), rows)
+        return {'total': len(rows), 'page': page, 'laws': rows[(page-1)*display:page*display]}
+
+    def _search_page(self, query, page, kind, display, scope=None):
+        params = {'query': query, 'display': display, 'page': page, 'target': kind, 'search': 1}
+        if scope is not None:
+            params['nw'] = scope
         root = xml_root(self.request('lawSearch.do', **params))
         if kind == 'law':
             nodes = root.findall('.//law')
@@ -161,7 +200,10 @@ class LawAPI:
         else:
             nodes = root.findall('.//admrul')
             keys = ('행정규칙일련번호', '행정규칙명', '발령일자')
-        return {'total': text(root, './/totalCnt', '0'), 'page': page, 'laws': [
+        total = text(root, './/totalCnt')
+        if not total.isdigit():
+            raise SetupError('법령 API 검색 응답에 건수가 없습니다. OC·API 권한 및 응답 형식을 확인하세요.')
+        return {'total': total, 'page': page, 'laws': [
             {'id': text(n, keys[0]), 'name': text(n, keys[1]),
              'promulgated': text(n, keys[2]), 'effective': text(n, '시행일자'),
              'status': text(n, '현행연혁코드'), 'kind': kind}

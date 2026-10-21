@@ -91,6 +91,7 @@ class Store:
     def connect(self):
         db = sqlite3.connect(self.db, timeout=30)
         db.row_factory = sqlite3.Row
+        db.create_function('compact_name', 1, lambda value: re.sub(r'\s+', '', value or ''))
         db.execute('PRAGMA foreign_keys=ON')
         db.enable_load_extension(True)
         sqlite_vec.load(db)

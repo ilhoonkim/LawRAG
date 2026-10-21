@@ -48,27 +48,29 @@ def item(mst='101',name='선박안전법'):
     return {'mst':mst,'name':name,'kind':'law'}
 
 
-def test_empty_categories_registration_and_no_collection(client):
-    assert client.get('/api/management/categories').json()['items']==[]
+def test_specified_categories_registration_and_no_collection(client):
+    assert len(client.get('/api/management/categories').json()['items'])==26
     r=client.post('/api/management/categories',json={'name':'선박안전법','kind':'law'})
-    assert len(r.json()['items'])==1
+    assert len(r.json()['items'])==27
     r=client.post('/api/management/categories',json={'name':'선박안전법','kind':'law'})
-    assert len(r.json()['items'])==1
+    assert len(r.json()['items'])==27
     assert client.get('/api/management/history').json()['total']==0
     assert client.get('/api/status').json()['laws']==[]
     assert client.post('/api/management/categories',json={'name':'  ','kind':'law'}).status_code==400
 
 
 def test_collection_versions_history_failure_and_retry(client):
-    r=client.post('/api/management/collections',json={'items':[item(),item('102'),item('999','실패법')],'keyword_only':True})
+    r=client.post('/api/management/collections',json={'items':[item(),item('102'),item('999','실패법')]})
     assert r.status_code==202 and r.json()['queued']==3
     h=client.get('/api/management/history').json()
     assert h['total']==3 and h['pending']==0 and h['last_completed']
+    assert '선박안전법' in {r['name'] for r in client.get('/api/management/categories').json()['items']}
+    assert '실패법' not in {r['name'] for r in client.get('/api/management/categories').json()['items']}
     assert {r['status'] for r in h['items']}=={'completed','failed'}
     failure=next(r for r in h['items'] if r['status']=='failed')
     assert failure['reason']=='법령 API 요청 실패'
     # Server enforces missing-only collection even if a stale UI submits it again.
-    r=client.post('/api/management/collections',json={'items':[item(),item('999','실패법')],'keyword_only':True})
+    r=client.post('/api/management/collections',json={'items':[item(),item('999','실패법')]})
     assert r.json()['queued']==1
     revisions=client.get('/api/management/revisions?query=선박안전법').json()
     assert revisions['total']==2
@@ -80,7 +82,7 @@ def test_collection_versions_history_failure_and_retry(client):
 
 
 def test_remote_browse_merges_collection_status(client):
-    client.post('/api/management/collections',json={'items':[item()],'keyword_only':True})
+    client.post('/api/management/collections',json={'items':[item()]})
     r=client.get('/api/management/revisions?source=api&query=선박안전법').json()
     assert next(x for x in r['items'] if x['id']=='101')['collection_status']=='completed'
     assert next(x for x in r['items'] if x['id']=='102')['collection_status']=='uncollected'
@@ -126,7 +128,7 @@ def test_current_historical_future_boundary_and_no_fallback(tmp_path):
 
 def test_missing_governing_revision_abstains(client):
     client.get('/api/management/revisions?source=api&query=선박안전법')
-    client.post('/api/management/collections',json={'items':[item('102')],'keyword_only':True})
+    client.post('/api/management/collections',json={'items':[item('102')]})
     result=client.post('/api/chat',json={'question':'선박안전법에 적용되지 않는 것은?','mode':'keyword','as_of':'2026-10-21'}).json()
     assert not result['generated'] and not result['evidence']
     assert '미수집' in result['answer'] and result['missing_versions'][0]['mst']=='101'

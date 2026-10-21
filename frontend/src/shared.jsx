@@ -18,7 +18,7 @@ export function timeText(value) {
     timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
   }).format(d);
 }
-export const statusLabels = { uncollected: '미수집', queued: '수집 대기', running: '수집 중', completed: '수집 완료', failed: '수집 실패', interrupted: '수집 중단' };
+export const statusLabels = { uncollected: '미수집', queued: '수집 대기', running: '수집 중', completed: '수집 완료', failed: '수집 실패', interrupted: '수집 중단', skipped: '건너뜀' };
 export const rowKey = row => `${row.kind}:${row.id}`;
 export const collectionItem = row => ({ mst: row.id, kind: row.kind, name: row.name, promulgated: row.promulgated || '', effective: row.effective || '' });
 export const selectable = row => !row.version && !['completed', 'queued', 'running'].includes(row.collection_status) && /^\d+$/.test(row.id);

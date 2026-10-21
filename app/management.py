@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 from .laws import SetupError, parse_law, parse_admrul
+from .catalog import register_catalog, snapshot, queue_catalog, resolve_catalog_item, normalize_name
 
 Kind = Literal['law', 'admrul']
 
@@ -29,9 +30,13 @@ class CollectionItem(BaseModel):
     effective: str = Field(default='', max_length=20)
 
 
+class CatalogCollectionInput(BaseModel):
+    keyword_only: Literal[False] = False
+
+
 class CollectionInput(BaseModel):
     items: list[CollectionItem] = Field(min_length=1, max_length=30)
-    keyword_only: bool = False
+    keyword_only: Literal[False] = False
 
 
 class Management:
@@ -48,6 +53,10 @@ class Management:
                     started_at TEXT, finished_at TEXT, reason TEXT, version TEXT, keyword_only INTEGER);
                 CREATE INDEX IF NOT EXISTS collection_source ON collection_history(kind,mst,requested_at);
             ''')
+            register_catalog(db)
+            for row in db.execute('SELECT DISTINCT name,kind FROM law_versions').fetchall():
+                if not db.execute('SELECT 1 FROM categories WHERE kind=? AND compact_name(name)=?', (row['kind'],normalize_name(row['name']))).fetchone():
+                    db.execute('INSERT OR IGNORE INTO categories(name,kind) VALUES(?,?)', (row['name'],row['kind']))
             db.execute("UPDATE collection_history SET status='interrupted', reason='서버가 종료되어 수집이 중단되었습니다. 다시 수집해 주세요.', finished_at=? WHERE status IN ('queued','running')", (now(),))
 
     def categories(self):
@@ -78,15 +87,33 @@ class Management:
 
     def revisions(self, query, kind, page, source):
         if source == 'api':
-            result = self.api.search(query, page, kind=kind, revisions=True, display=10)
+            # Filter the full API result before pagination, so 시행령/시행규칙
+            # cannot inflate this law's version count or create empty pages.
+            rows, seen = {}, set()
+            for remote_page in range(1, 201):
+                result = self.api.search(query, remote_page, kind=kind, revisions=True, display=100)
+                items = result['laws']
+                signature = tuple(r['id'] for r in items)
+                if (not items and (remote_page-1)*100 < int(result['total'])) or (items and signature in seen):
+                    raise ValueError('API 연혁 목록의 페이지가 누락되거나 반복되었습니다.')
+                seen.add(signature)
+                for row in items:
+                    if normalize_name(row['name']) == normalize_name(query):
+                        rows[row['id']] = row
+                if remote_page*100 >= int(result['total']):
+                    break
+            else:
+                raise ValueError('연혁 조회 범위를 초과했습니다.')
+            ordered = sorted(rows.values(), key=lambda r:(r['effective'],r.get('promulgated',''),r['id']), reverse=True)
+            result = {'laws': ordered, 'total': len(ordered)}
             with self.store.connect() as db:
                 db.executemany('INSERT OR REPLACE INTO revision_catalog VALUES(?,?,?,?,?)',
                     [(kind, r['id'], r['name'], r['effective'], r.get('promulgated','')) for r in result['laws']])
             return {'total': int(result['total']), 'page': page,
-                    'items': [self.decorate(item) for item in result['laws']]}
+                    'items': [self.decorate(item) for item in result['laws'][(page-1)*10:page*10]]}
         with self.store.connect() as db:
-            where = 'kind=? AND instr(name,?)>0'
-            args = (kind, query)
+            where = 'kind=? AND instr(compact_name(name),?)>0'
+            args = (kind, normalize_name(query))
             total = db.execute(f'SELECT count(*) FROM law_versions WHERE {where}', args).fetchone()[0]
             rows = db.execute(f'''SELECT v.*, EXISTS(SELECT 1 FROM laws l WHERE l.version=v.version) active
                 FROM law_versions v WHERE {where} ORDER BY effective DESC, promulgated DESC, collected_at DESC
@@ -99,7 +126,15 @@ class Management:
             item['active'] = item['version'] in active_versions
         return {'total': total, 'page': page, 'items': items}
 
+    def require_collection_keys(self):
+        if hasattr(self.api, 'oc') and not self.api.oc:
+            raise SetupError('.env의 LAW_API_OC를 입력하고 서버를 재시작하세요.')
+        settings = getattr(self.provider, 'settings', None)
+        if settings is not None and not settings.api_key:
+            raise SetupError('.env의 LLM_API_KEY를 입력하고 서버를 재시작하세요. 수집은 임베딩까지 완료해야 합니다.')
+
     def queue(self, request):
+        self.require_collection_keys()
         batch = uuid4().hex
         ids = []
         with self.store.connect() as db:
@@ -116,7 +151,7 @@ class Management:
                 ids.append(event_id)
         return {'batch': batch, 'queued': len(ids), 'ids': ids}
 
-    def run(self, ids):
+    def run(self, ids, resolve_catalog=False):
         # One API/embedding request stream at a time; queue/status remains readable.
         with self.worker_lock:
             for event_id in ids:
@@ -124,11 +159,19 @@ class Management:
                     event = dict(db.execute('SELECT * FROM collection_history WHERE id=?', (event_id,)).fetchone())
                     db.execute("UPDATE collection_history SET status='running',started_at=? WHERE id=?", (now(), event_id))
                 try:
+                    if resolve_catalog:
+                        event = resolve_catalog_item(self, event)
+                        if event is None:
+                            continue
                     raw = self.api.fetch(event['mst'], kind=event['kind'])
                     law = parse_admrul(raw) if event['kind'] == 'admrul' else parse_law(raw)
+                    if 'expected_name' in event and (normalize_name(law.name) != normalize_name(event['expected_name']) or law.effective != event['expected_effective']):
+                        raise ValueError('본문 응답의 법령명 또는 시행일이 선택한 버전과 다릅니다.')
                     result = self.store.ingest(raw, self.provider, bool(event['keyword_only']),
                                               mst=event['mst'], kind=event['kind'], archive_only=True)
                     with self.store.connect() as db:
+                        if not db.execute('SELECT 1 FROM categories WHERE kind=? AND compact_name(name)=?', (event['kind'],normalize_name(law.name))).fetchone():
+                            db.execute('INSERT OR IGNORE INTO categories(name,kind) VALUES(?,?)', (law.name,event['kind']))
                         db.execute("UPDATE collection_history SET status='completed',finished_at=?,version=?,name=?,promulgated=?,effective=? WHERE id=?",
                                    (now(), result['version'], law.name, law.promulgated, law.effective, event_id))
                 except Exception as exc:
@@ -170,6 +213,17 @@ class Management:
 def management_router(manager):
     router = APIRouter(prefix='/api/management')
 
+    @router.get('/catalog/real-estate')
+    def real_estate_catalog():
+        return snapshot(manager)
+
+    @router.post('/catalog/real-estate/collect', status_code=202)
+    def collect_real_estate(body: CatalogCollectionInput, background: BackgroundTasks):
+        result = queue_catalog(manager, body.keyword_only)
+        if result['ids']:
+            background.add_task(manager.run, result['ids'], resolve_catalog=True)
+        return result
+
     @router.get('/categories')
     def categories():
         return {'items': manager.categories()}
@@ -177,6 +231,12 @@ def management_router(manager):
     @router.post('/categories')
     def add_category(body: CategoryInput):
         return {'items': manager.add_category(body.name, body.kind)}
+
+    @router.get('/names')
+    def names(query: str = Query(min_length=2, max_length=100), kind: Kind = 'law',
+              page: int = Query(default=1, ge=1)):
+        result = manager.api.search(query.strip(), page, kind=kind, revisions=False, display=10)
+        return {'items': result['laws'], 'total': int(result['total']), 'page': page}
 
     @router.get('/revisions')
     def revisions(query: str = Query(default='', max_length=100), kind: Kind = 'law',
