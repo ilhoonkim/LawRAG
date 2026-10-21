@@ -117,6 +117,7 @@ def parse_law(raw: bytes) -> Law:
 
 
 VIEWER_CSS = Path(__file__).with_name("document_viewer.css").read_text(encoding="utf-8")
+VIEWER_VERSION = '3'
 
 
 def render_html(law: Law) -> str:
@@ -131,18 +132,21 @@ def render_html(law: Law) -> str:
         # Numeric selectors keep law text out of CSS, while standalone HTML
         # still highlights the matching TOC entry without JavaScript.
         target_styles.append(f'body:has(.law-content section:nth-of-type({index}):target) .toc a[data-section-index="{index}"]' + '{background:#eaf0ff;color:#3f4b9c;font-weight:600}')
-    # API에서 완성된 링크를 받는 것이 아닙니다. 본문의 '제N조'를 찾아 같은 법령의
-    # 실제 조문과 매칭한 뒤 이 HTML 안의 앵커로 연결합니다. 타 법령 참조는 자동 연결하지 않습니다.
+    # 본문의 '제N조', '별표 N'을 같은 수집 버전의 조문·별표와 매칭해 연결합니다.
+    # 별표의 가지번호도 지원하며, 대상이 없거나 타 법령인 경우 원문 표현을 유지합니다.
     # 표시용 링크 생성과 LLM 문맥 확장(graph.py)은 별도 처리입니다.
     def annotated_body(article):
-        by_number = {a.number: a for a in law.articles}
+        by_number = {a.number: a for a in [*law.articles, *law.annexes]}
         parts, cursor = [], 0
-        for match in re.finditer(r'제\s*(\d+)\s*조(?:\s*의\s*(\d+))?', article.body):
+        for match in re.finditer(r'제\s*(\d+)\s*조(?:\s*의\s*(\d+))?|별표\s*(\d+)(?:\s*의\s*(\d+))?', article.body):
             parts.append(esc(article.body[cursor:match.start()]))
-            number = f'제{int(match[1])}조' + (f'의{int(match[2])}' if match[2] else '')
+            if match[3]:
+                number = f'별표 {int(match[3])}' + (f'의{int(match[4])}' if match[4] else '')
+            else:
+                number = f'제{int(match[1])}조' + (f'의{int(match[2])}' if match[2] else '')
             target = by_number.get(number) if reference_target(article.body,match.start(),law.name)==law.name else None
             if target and target.title and number != article.number:
-                label = esc(number + '(' + target.title + ')')
+                label = esc(number + ('(' + target.title + ')' if target.title != number else ''))
                 parts.append(f'<a href="#{quote(target.section_id,safe="")}">{label}</a>')
             else:
                 parts.append(esc(match[0]))
@@ -158,12 +162,12 @@ def render_html(law: Law) -> str:
         sections.append(f'<section id="{esc(article.section_id, quote=True)}"><h2>{esc(heading(article.number,article.title))}</h2><pre>{annotated_body(article)}</pre></section>')
     for index, annex in enumerate(law.annexes, len(law.articles)+1):
         add_toc(annex, index)
-        body = esc(annex.body) if annex.body else '별표 본문이 확보되지 않았습니다. 원문 파일 추출이 필요합니다.'
+        body = annotated_body(annex) if annex.body else '별표 본문이 확보되지 않았습니다. 원문 파일 추출이 필요합니다.'
         link = f'<a href="{esc(annex.source_url, quote=True)}" target="_blank" rel="noopener noreferrer">별표 원문 파일</a>' if annex.source_url else ''
         sections.append(f'<section id="{esc(annex.section_id, quote=True)}"><h2>{esc(heading(annex.number,annex.title))}</h2><pre>{body}</pre>{link}</section>')
     def date_label(value):
         return f'{value[:4]}.{value[4:6]}.{value[6:]}' if re.fullmatch(r'\d{8}',value or '') else value or '미상'
-    return f'''<!doctype html><html lang="ko" data-viewer-version="2"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(law.name)}</title>
+    return f'''<!doctype html><html lang="ko" data-viewer-version="{VIEWER_VERSION}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(law.name)}</title>
 <style>{VIEWER_CSS}{''.join(target_styles)}</style></head><body>
 <header class="document-header"><h1>{esc(law.name)}</h1><p class="document-meta">[시행 {esc(date_label(law.effective))}] [공포·발령 {esc(date_label(law.promulgated))}]<a href="{esc(law.source_url,quote=True)}" target="_blank" rel="noopener noreferrer">법령정보센터 원문</a></p></header>
 <div class="document-layout"><nav class="toc" aria-label="조문 목차"><h2 class="toc-title">조문 목차</h2>{''.join(toc_parts)}</nav>

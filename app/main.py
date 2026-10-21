@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from .config import Settings
-from .laws import LawAPI, SetupError, parse_law, parse_admrul, render_html
+from .laws import LawAPI, SetupError, parse_law, parse_admrul, render_html, VIEWER_VERSION
 from .provider import Provider
 from .store import Store
 from .management import Management, management_router
@@ -183,7 +183,7 @@ def create_app(settings=None, provider=None, law_api=None):
         # Upgrade the viewer from this exact archived XML; no API/embedding call
         # and no substitution with the currently effective version.
         raw = settings.data_dir / 'raw' / (path.stem + '.xml')
-        if raw.is_file() and 'data-viewer-version="2"' not in path.read_text(encoding='utf-8')[:200]:
+        if raw.is_file() and f'data-viewer-version="{VIEWER_VERSION}"' not in path.read_text(encoding='utf-8')[:200]:
             with store.connect() as db:
                 row = db.execute('SELECT kind FROM law_versions WHERE version=?', (path.stem,)).fetchone()
             law = parse_admrul(raw.read_bytes()) if row and row['kind']=='admrul' else parse_law(raw.read_bytes())

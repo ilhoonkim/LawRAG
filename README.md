@@ -220,6 +220,21 @@ SQLite의 저장 조문·별표와 참조 원문을 사용합니다. 기존 자�
 
 UI는 로컬에 포함한 Pretendard Variable 글꼴과 SVG 말풍선·법령 아이콘을 사용합니다. 외부 폰트 CDN을 호출하지 않아 내부망에서도 같은 글꼴로 표시합니다. 글꼴 라이선스는 `frontend/licenses/Pretendard-OFL.txt`에 포함합니다.
 
+## HTML만 전체 재생성
+
+본문의 `별표 1`, `별표2`, `별표 10`, `별표 1의2` 등은 같은 수집 버전의 별표 위치로 연결됩니다. 별표 본문 안의 조문·별표 참조도 연결합니다. 다른 법령·불명확한 대상·XML에 없는 별표는 자동 연결하지 않습니다. 텍스트가 없고 공식 파일 주소만 있는 별표는 해당 위치에 본문 미확보 안내와 원문 파일 링크를 표시합니다.
+
+로컬 프로젝트에서 아래 명령을 실행하면 **과거 버전과 행정규칙을 포함한 모든 수집 버전**의 HTML을 보관 XML로 다시 만듭니다.
+
+```powershell
+git pull
+.\.venv\Scripts\python.exe -m app.rebuild_html
+```
+
+`.env`의 `DATA_DIR`을 사용하며 다른 폴더는 `--data-dir 경로`로 지정합니다. API 호출, 재임베딩, 메타데이터 재생성 없이 HTML만 교체합니다. DB는 읽기 전용으로 열며 원문 XML과 기존 출처 URL·앵커는 유지합니다. XML이 없거나 해시가 다르면 해당 HTML을 유지하고 실패를 출력한 뒤 나머지를 계속 처리합니다. 갱신 코드를 앱에도 적용하려면 서버를 재시작하세요. 구형 HTML은 앱에서 열 때에도 같은 버전 XML로 갱신됩니다.
+
+다른 개발자에게 전달할 독립 파일은 `law_article_links.py`입니다. 표준 라이브러리만 사용하며 `python law_article_links.py law.xml -o law.html`로 XML 한 건을 변환합니다. 앱의 저장 자료 전체 갱신에는 위의 `app.rebuild_html` 명령을 사용하세요.
+
 ## 프론트엔드 개발
 
 React 소스는 `frontend/src/`, 빌드 결과는 `app/static/`입니다. **빌드 결과를 직접 수정하지 마세요.** Node.js 22 LTS 이상을 권장합니다.
