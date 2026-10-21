@@ -2,6 +2,9 @@
 import re
 from .temporal import resolve_date
 
+# 채팅의 전체 흐름: 기준일 확정 → 원질의+재작성 검색 → 후보 검토 → 연결 조문 확장
+# → 근거 충분성 점검 → 필요 시 한 번 더 검색 → 확보한 본문으로 답변 생성.
+# progress 호출 시점이 화면 단계 표시의 기준이며, 타이머로 진행 상황을 추정하지 않습니다.
 STAGES = [
     ('rewrite', '질문 재조정 중'), ('search', '관련 법조항 검색 중'),
     ('review', '법조항 후보군 검토 중'), ('assess', '근거 충분성 확인 중'),
@@ -9,6 +12,7 @@ STAGES = [
 ]
 
 
+# 법령명과 조 번호가 같아도 개정 버전이 다르면 서로 다른 근거입니다.
 def source_key(row):
     return row['version'], row['law_name'], row['number']
 
@@ -18,6 +22,8 @@ def review_limit(settings):
     return min(15, max(1, settings.candidate_limit))
 
 
+# 검색 단독 API는 참조 확장까지 수행할 수 있습니다. 채팅은 expand=False로 호출한 뒤
+# 관련성 검토를 통과한 조문에 대해서만 참조를 확장합니다. 법령명 입력은 필수가 아닙니다.
 def retrieve(store, provider, settings, body, *, variants=None, limit=None, expand=True):
     cutoff, clarification = resolve_date(body.question, body.as_of)
     if clarification:
@@ -34,6 +40,8 @@ def retrieve(store, provider, settings, body, *, variants=None, limit=None, expa
             'clarification': None, 'missing_versions': missing, 'coverage_note': timeline['note']}
 
 
+# 길이 제한을 맞추려고 조문 중간을 자르면 단서·예외가 사라질 수 있습니다.
+# 조문 전체를 포함하거나 제외하고, 제외한 근거는 부족한 자료 목록에 남깁니다.
 def budgeted(evidence, max_chars):
     """Never cut a proviso off an article to fit a prompt."""
     selected, missing, size = [], [], 0
@@ -57,6 +65,7 @@ def review(store, provider, settings, question, candidates, cutoff, rejected):
         unique.setdefault(source_key(e),e)
     selected = list(unique.values())[:review_limit(settings)]
     reviewed = provider.filter_evidence(question,selected) if selected else []
+    # 탈락 기록은 추가 검색에도 유지됩니다. 같은 후보가 연결 조문으로 우회 복귀하지 못합니다.
     rejected.update({source_key(e) for e in selected} - {source_key(e) for e in reviewed})
     if not reviewed:
         return [], []
@@ -83,8 +92,10 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
     if clarification:
         return {'evidence': [], 'answer': clarification, 'clarification': clarification,
                 'as_of': None, 'missing_versions': [], 'generated': False}
+    # 이 요청의 모든 검색은 같은 기준일을 사용합니다. 재작성 문장이 날짜를 바꾸지 못합니다.
     search_body = body.model_copy(update={'as_of':cutoff})
     progress('rewrite')
+    # rewrite는 원질의를 대체하지 않습니다. 검색은 둘 다 사용하고 검토·답변은 원질의로 합니다.
     rewritten = provider.rewrite_question(body.question)
     progress('search')
     result = retrieve(store,provider,settings,search_body,variants=[rewritten],
@@ -105,6 +116,8 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
             extra_queries.append(q)
             used.add(normalize(q))
     extra_queries = extra_queries[:2]
+    # 추가 검색은 누락 쟁점에 대한 새 검색어로 한 번만 수행합니다.
+    # 같은 질문 반복이나 끝없는 재검색을 피하고, 사용자 사실 부족은 질문으로 남깁니다.
     rounds = 0
     # User facts require clarification, not a search that invents those facts.
     if not assessment['sufficient'] and extra_queries and (assessment['missing_issues'] or (not evidence and not assessment['missing_facts'])):
@@ -128,6 +141,8 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
     # Only search hits are recommended in the UI. Keep linked articles in the
     # LLM context; Provider assigns numeric citations to the visible hits only.
     evidence.sort(key=lambda e:(-e.get('score',0),bool(e.get('relation')),source_key(e)))
+    # 연결 조문도 LLM에는 전달하지만 추천 출처에서는 숨깁니다.
+    # approved_count에는 검토를 통과한 후보에서 확장한 연결 문맥도 포함됩니다.
     visible_evidence = [e for e in evidence if not e.get('relation')]
     result.update(evidence=visible_evidence,missing_references=missing,rewritten_query=rewritten,
         original_question=body.question,candidate_count=len(candidates),approved_count=len(evidence),

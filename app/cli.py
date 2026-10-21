@@ -8,6 +8,8 @@ from .provider import Provider
 from .store import Store
 
 
+# 간단한 수동 조회·수집·검색 진입점입니다. search는 후보 반환까지만 수행합니다.
+# 최신 3개 일괄 수집은 preload_real_estate, 실제 채팅 흐름은 chat_pipeline을 참고하세요.
 def main():
     parser = argparse.ArgumentParser(description='LawRAG 수집 및 검색')
     sub = parser.add_subparsers(dest='command', required=True)

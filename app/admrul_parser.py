@@ -5,6 +5,8 @@ import re
 import xml.etree.ElementTree as ET
 
 
+# 행정규칙은 조문 XML 외에도 CDATA HTML·서술형 본문으로 내려옵니다.
+# 마크업을 실행하지 않고 문단/표 셀 경계를 텍스트로 보존하며 이미지 내용은 추측하지 않습니다.
 class RuleText(HTMLParser):
     blocks = {'p','div','li','tr','table','h1','h2','h3','h4','section','article','pre'}
 
@@ -80,6 +82,8 @@ def label(number, branch=''):
     return f'제{number}조' + (f'의{int(branch)}' if branch and int(branch) else '')
 
 
+# 조 번호가 없는 지침은 원문의 구간으로 나눕니다. '본문 구간 N'은 탐색용 식별자이며
+# 법적 조문 번호가 아닙니다. 중복 조 번호 때문에 원문 구간으로 되돌리는 경우에도 사용합니다.
 def prose_chunks(body, title='행정규칙 본문'):
     # These are source-text locations, not fabricated legal article numbers.
     chunks = []
@@ -97,6 +101,8 @@ def prose_chunks(body, title='행정규칙 본문'):
     return chunks
 
 
+# 행 시작의 조 표제와 본문 속 인용을 구분합니다. 부칙 이후 문장은 일반 구간으로 보존해
+# 본칙과 부칙의 같은 조 번호가 섞여 잘못 연결되는 것을 피합니다.
 def split_body(body):
     units, pending, current, chapters = [], [], None, {}
     supplemental = False
@@ -142,6 +148,8 @@ def split_body(body):
     return units
 
 
+# 구조화된 조문을 먼저 사용하고, 없으면 지원하는 본문 태그에서 서술형 텍스트를 추출합니다.
+# 텍스트가 없는 이미지/첨부파일 전용 응답은 성공으로 간주하지 않고 별도 추출 필요를 알립니다.
 def parse_units(root):
     nodes = root.findall('.//조문단위') or root.findall('.//조문')
     units = []

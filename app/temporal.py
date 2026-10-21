@@ -3,10 +3,14 @@ import re
 from datetime import date, datetime, timedelta, timezone
 
 
+# 서버의 OS 시간대가 UTC여도 법령 시행일의 '오늘'은 한국 날짜로 일관되게 판단합니다.
 def today_in_korea():
     return datetime.now(timezone(timedelta(hours=9))).date()
 
 
+# 명시적인 as_of가 최우선이며, 없으면 질문의 단일 날짜를 사용합니다.
+# 기간·모호한 과거 표현은 임의 날짜로 바꾸지 않고 확인 메시지를 반환합니다.
+# 시간 표현이 없을 때만 한국 기준 오늘을 사용합니다.
 def resolve_date(question: str, explicit: date | None = None):
     if explicit:
         return explicit, None

@@ -11,15 +11,21 @@ from .provider import Provider
 from .store import Store
 from .temporal import today_in_korea
 
+# 지정 목록의 일괄 수집 CLI: python -m app.preload_real_estate
+# 화면 수집과 같은 Management 경로를 사용하므로 완료·실패 내역도 동일한 DB에 남습니다.
 RECENT_VERSION_LIMIT = 3
 
 
+# '최근 3개'는 오늘까지 시행된 연혁 중 세 개입니다. 이미 수집된 건을 제외하기 전에
+# 범위를 정해야 반복 실행할 때마다 더 오래된 버전을 추가로 수집하지 않습니다.
 def recent_versions(rows):
     # discover_versions returns oldest first. Limit BEFORE skipping indexed rows,
     # so repeated runs cannot gradually backfill older versions.
     return rows[-RECENT_VERSION_LIMIT:][::-1]
 
 
+# 현행 명칭과 등록된 과거 명칭을 모두 조회하고 정확히 일치하는 결과만 모읍니다.
+# 조회 연혁은 DB에 남기지만 본문 수집 여부와 구분합니다. 실제 수집 범위는 호출자가 줄입니다.
 def discover_versions(manager, item):
     """Resolve current and requested historical titles; retain every API version."""
     matches = {}
@@ -52,6 +58,8 @@ def discover_versions(manager, item):
     return rows
 
 
+# 이 CLI의 완료 판정은 제목·본문 벡터와 현재 임베딩 모델을 기준으로 합니다.
+# 검색 메타데이터의 별도 보강 상태는 enrich_metadata CLI에서 확인합니다.
 def indexed(manager, row):
     with manager.store.connect() as db:
         stored = db.execute('SELECT version FROM law_versions WHERE kind=? AND mst=? AND effective=?', (row['kind'],row['id'],row['effective'])).fetchone()
@@ -141,6 +149,8 @@ def main(argv=None):
         return 2
     manager = Management(Store(settings.data_dir), Provider(settings), LawAPI(settings.law_oc), recover_pending=not args.list_only)
     print(f'한국 날짜 {today_in_korea().isoformat()} 기준: 법령별 최근 {RECENT_VERSION_LIMIT}개, 시행 예정 제외')
+    # 조회 전용도 발견한 연혁은 revision_catalog에 저장합니다.
+    # 본문 다운로드·임베딩과 이전 실행의 대기 작업 상태 변경은 하지 않습니다.
     if args.list_only:
         failed = False
         for item in items:

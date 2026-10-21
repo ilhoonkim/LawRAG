@@ -5,6 +5,8 @@ from .references import article_links, annex_references, reference_target
 from .store import grams
 
 
+# 검색으로 찾은 조문에 필요한 참조·역참조·별표·정의 문맥을 붙이는 계층입니다.
+# HTML의 이동 링크와는 별개로 저장된 본문을 읽어 관계를 구성하며, 그래프 DB는 사용하지 않습니다.
 def key(row):
     return row['version'], row['law_name'], row['number']
 
@@ -13,6 +15,8 @@ def canonical(name):
     return re.sub(r'\s+', '',name)
 
 
+# 문서에 실제로 선언된 '이하 ...라 한다' 약칭을 수집합니다.
+# 같은 약칭이 여러 법을 가리키면 임의의 법령으로 확정하지 않습니다.
 def aliases(text):
     names = {}
     for name,short in re.findall(r'「([^」]+)」\s*\(이하\s*["“「]([^"”」]+)["”」]\s*(?:이)?라\s*한다',text):
@@ -62,6 +66,7 @@ def links(row, declared):
 def expand(store, evidence, *, cutoff, question='', limit=40):
     if not evidence:
         return [], []
+    # 다른 법령을 참조하더라도 같은 기준일에 적용되는 수집 버전만 문맥에 넣습니다.
     versions = store.temporal_versions(cutoff)['versions']
     selected = {v['version']:v for v in versions}
     # Only eligible versions participate in cross-law/reverse traversal.
@@ -88,6 +93,8 @@ def expand(store, evidence, *, cutoff, question='', limit=40):
     edges = {k:links(node,declared.get(node['version'],{})) for k,node in nodes.items()}
     expanded, missing, additions = [dict(e) for e in evidence], [], {}
     seen = {key(e) for e in evidence}
+    # 연결 경로와 원문 발췌를 함께 보관해 답변 모델이 참조 방향을 알 수 있게 합니다.
+    # score는 출발점 점수를 이어받은 문맥 우선순위이며 연결 조문 자체의 검색 점수가 아닙니다.
     def attach(node, parent, relation, excerpt):
         k = key(node)
         if k in seen:
@@ -103,6 +110,8 @@ def expand(store, evidence, *, cutoff, question='', limit=40):
                 'parent_context':parent['body'],'reference_edges':[edge], 'reference_titles':[]}
         else:
             additions[k]['reference_edges'].append(edge)
+    # 검색 근거에서 한 단계만 확장합니다. 새로 붙인 조문을 다시 순회하지 않아
+    # 참조가 연쇄적으로 늘어나 전체 법령을 프롬프트에 넣는 일을 피합니다.
     for article in expanded:
         article['reference_titles'] = []
         # Roots must not quietly switch to another version of the same law.
@@ -119,6 +128,7 @@ def expand(store, evidence, *, cutoff, question='', limit=40):
                 continue
             article['reference_titles'].append({'number':number,'title':node['title'],'law_name':node['law_name'],'version':node['version']})
             attach(node,article,relation,excerpt)
+        # 역참조는 '현재 조문이 인용한 조문'이 아니라 '현재 조문을 인용하는 조문'입니다.
         for k,node_edges in edges.items():
             for number,law,_,excerpt in node_edges:
                 if number==article['number'] and canonical(law)==canonical(article['law_name']):
@@ -132,6 +142,8 @@ def expand(store, evidence, *, cutoff, question='', limit=40):
             if node['version']==article['version'] and re.fullmatch(r'용어의\s*정의|정의',node['title'].strip()):
                 if grams(node['body']) & grams(question + article['body']):
                     attach(node,article,'definition_context',node['body'][:180])
+    # 질문과 겹치는 문맥을 먼저 담고 확장 개수를 제한합니다.
+    # 이후 chat_pipeline.budgeted()에서 전체 답변 입력의 본문 길이도 제한합니다.
     ordered = sorted(additions.values(),key=lambda n:(-len(grams(question)&grams(n['body'])), -n['score'],key(n)))
     for node in ordered[limit:]:
         missing.append({'law_name':node['law_name'],'number':node['number'],'version':node['version'],

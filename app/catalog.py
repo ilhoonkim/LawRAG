@@ -10,6 +10,8 @@ def normalize_name(name):
     return re.sub(r'\s+', '', name).strip('「」')
 
 
+# 카테고리 초기 등록일 뿐 자동 수집이 아닙니다. 등록 이력으로 반복 초기화를 피하고,
+# 과거 명칭에 실제 수집 버전이 있는 경우에는 해당 카테고리를 보존합니다.
 def register_catalog(db):
     # The user supplied these exact names; registration is not collection.
     db.execute('CREATE TABLE IF NOT EXISTS catalog_registrations (id TEXT PRIMARY KEY)')

@@ -9,6 +9,8 @@ from .laws import SetupError
 from .provider import Provider
 from .store import Store, body_text
 
+# 제목·본문 임베딩을 교체하는 유지보수 CLI: python -m app.upgrade_models
+# 서버를 종료하고 실행합니다. 요약·질문 벡터 보강은 app.enrich_metadata의 별도 작업입니다.
 TARGET = 'text-embedding-3-large'
 
 
@@ -21,6 +23,7 @@ def reindex(store, provider, report_path, notify=print):
         try:
             with store.connect() as db:
                 rows = [dict(r) for r in db.execute('SELECT * FROM version_articles WHERE version=? ORDER BY position', (version['version'],))]
+            # DB의 모델 식별자와 제목/본문 벡터가 갖춰진 버전은 건너뛰어 재실행 비용을 줄입니다.
             if rows and all(r['model'] == provider.fingerprint and r['vector'] and r['title_vector'] for r in rows):
                 item['status'] = 'skipped'
                 report['skipped'] += 1
@@ -35,6 +38,8 @@ def reindex(store, provider, report_path, notify=print):
                 if len(vectors) != len(texts) or len({len(v) for v in vectors}) != 1:
                     raise ValueError('임베딩 응답 개수 또는 차원이 일치하지 않습니다.')
                 # No DB mutation until every title/body vector for this version succeeded.
+                # 한 버전의 모든 임베딩 응답이 준비된 다음 DB를 한 번에 갱신합니다.
+                # API 실패로 같은 버전 안에 이전/새 모델 벡터가 반쯤 섞이지 않도록 하는 경계입니다.
                 with store.connect() as db:
                     for i, row in enumerate(rows):
                         body = sqlite_vec.serialize_float32(vectors[i])

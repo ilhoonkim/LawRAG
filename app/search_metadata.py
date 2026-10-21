@@ -7,6 +7,8 @@ import re
 import sqlite_vec
 from .laws import SetupError
 
+# 요약·예상 질문은 검색 보조 색인입니다. 원문을 덮어쓰거나 답변의 법적 근거로 쓰지 않습니다.
+# 생성 정책을 바꿔 기존 캐시를 무효화해야 할 때 PROMPT_VERSION도 함께 변경합니다.
 PROMPT_VERSION = 'article-discovery-v1'
 BATCH_SIZE = 5
 BATCH_CHARS = 32000
@@ -36,6 +38,8 @@ def source_hash(row):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+# 조문 원문·생성 모델·프롬프트 버전·API 주소가 같으면 생성 결과를 재사용합니다.
+# 임베딩 모델은 이 키에서 분리되어 있어 벡터만 바꿀 때 요약을 다시 만들지 않습니다.
 def identity(provider, row):
     generator = provider.settings.metadata_model
     digest = source_hash(row)
@@ -43,6 +47,8 @@ def identity(provider, row):
     return key, digest, generator
 
 
+# 비용과 응답 길이를 제어하려고 최대 5개/문자 예산으로 묶되 조문 본문은 자르지 않습니다.
+# 단일 조문이 예산보다 길면 혼자 묶음이 되므로 이것은 개별 입력의 절대 길이 제한은 아닙니다.
 def batches(documents):
     batch, size = [], 0
     for row in documents:
@@ -89,6 +95,8 @@ class MetadataBatchError(SetupError):
         super().__init__('검색 메타데이터 생성 실패: ' + '; '.join(dict.fromkeys(errors.values())))
 
 
+# 응답 배열 순서가 아니라 id로 조문과 결과를 연결합니다.
+# 유효한 형제 항목은 살려 두고 잘못된 항목만 재시도하되, 모르는 id의 대응 관계는 추측하지 않습니다.
 def _response_items(data, indices):
     """Only accept unambiguous IDs; report safe categories, never raw output."""
     try:
@@ -147,6 +155,8 @@ def _generate_request(provider, documents, indices, errors):
     return provider.post('/chat/completions', request)
 
 
+# 정상일 때는 일괄 생성하고, 오류 항목만 최대 두 개씩 묶어 한 번 재시도합니다.
+# 일부 성공 후 실패하면 예외에 성공 결과도 담아 상위 계층에서 캐시에 저장할 수 있게 합니다.
 def generate(provider, documents):
     """Batch normally; retry only invalid items once, in batches of at most two."""
     if not documents:
@@ -190,6 +200,8 @@ def prepare(store, provider, documents):
     Cache keys include exact law/article text, generation model and prompt version.
     Bindings to collected versions are committed separately, only after success.
     """
+    # 생성 텍스트 저장 → 벡터 저장 → 호출자가 조문에 bind하는 순서입니다.
+    # 단계별로 완료 결과를 남겨 임베딩/프로세스 실패 후에도 이미 생성한 텍스트를 재사용합니다.
     identities = [identity(provider, row) for row in documents]
     missing, cached = {}, {}
     with store.connect() as db:
@@ -226,6 +238,7 @@ def prepare(store, provider, documents):
             ready = vectors_ready(db,key,metadata,provider.fingerprint)
         if not ready:
             pending.append(key)
+    # 현재 임베딩 모델의 누락분만 채웁니다. 다른 모델의 벡터와 원문 데이터는 유지합니다.
     for start in range(0,len(pending),BATCH_SIZE):
         keys = pending[start:start+BATCH_SIZE]
         pieces = [(key,*piece) for key in keys for piece in texts(cached[key])]
@@ -241,12 +254,16 @@ def prepare(store, provider, documents):
     return [key for key, _, _ in identities]
 
 
+# 준비가 끝난 메타데이터를 정확한 수집 버전·조문 위치에 연결합니다.
+# 트랜잭션 경계는 호출자가 관리해 본문 저장 또는 배치 완료와 함께 확정할 수 있습니다.
 def bind(db, version, position, key):
     db.execute('''INSERT INTO article_metadata VALUES(?,?,?,'completed','',?)
         ON CONFLICT(version,position) DO UPDATE SET metadata_key=excluded.metadata_key,
         status=excluded.status,error=excluded.error,updated_at=excluded.updated_at''', (version,position,key,now()))
 
 
+# 최신 갱신이 실패했어도 이전의 유효한 연결은 읽을 수 있습니다.
+# 본문 해시 일치 여부는 retrieval.py에서 다시 확인하고, 벡터는 요청 모델의 것만 반환합니다.
 def load(db, version, model):
     """Return text and only compatible vectors for this exact collected version."""
     result = {}

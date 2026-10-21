@@ -11,6 +11,9 @@ from .references import annex_references, article_links
 from .laws import parse_law, parse_admrul, render_html, SetupError
 
 
+# 저장소는 원문 XML/HTML 파일과 SQLite를 함께 관리합니다.
+# 현재 검색 경로는 search_enhanced() → retrieval.py, 문맥 확장은 expand_context() → graph.py입니다.
+# 아래 search()/expand_references()는 기존 구현이므로 현재 검색 경로와 구분해서 읽어 주세요.
 def grams(value):
     value = re.sub(r'[^가-힣a-z0-9]', '', value.lower())
     return {value[i:i+2] for i in range(len(value)-1)}
@@ -52,6 +55,9 @@ class Store:
         (directory / 'html').mkdir(exist_ok=True)
         (directory / 'raw').mkdir(exist_ok=True)
         self.db = directory / 'laws.sqlite3'
+        # law_versions/version_articles는 모든 수집 버전, laws/articles는 활성 버전용 테이블입니다.
+        # revision_catalog는 API에서 조회한 연혁일 뿐 본문 수집 완료를 뜻하지 않습니다.
+        # 생성 메타데이터·그 벡터·조문 연결은 별도 테이블로 분리해 재시도 시 재사용합니다.
         with self.connect() as db:
             db.executescript('''
               CREATE TABLE IF NOT EXISTS laws (id TEXT PRIMARY KEY, name TEXT, effective TEXT, version TEXT, html TEXT, source_url TEXT);
@@ -95,6 +101,8 @@ class Store:
                 WHERE NOT EXISTS (SELECT 1 FROM version_articles v WHERE v.version=l.version);
 
             ''')
+            # 동일 MST라도 시행일별 버전이 다를 수 있어 연혁의 복합 키에 시행일을 포함합니다.
+            # 기존 DB는 필요한 스키마만 보완하며 저장된 법령을 다시 다운로드하지 않습니다.
             catalog_pk = [r['name'] for r in db.execute('PRAGMA table_info(revision_catalog)') if r['pk']]
             if 'effective' not in catalog_pk:
                 db.executescript('''
@@ -110,6 +118,8 @@ class Store:
             if 'title_vector' not in columns:
                 db.execute('ALTER TABLE version_articles ADD COLUMN title_vector BLOB')
 
+    # 연결을 스레드 사이에서 공유하지 않습니다. 각 with 블록은 정상 종료 시 commit,
+    # 예외 시 rollback 후 연결을 닫습니다. 외부 API 호출은 가능한 한 쓰기 트랜잭션 밖에서 합니다.
     @contextmanager
     def connect(self):
         db = sqlite3.connect(self.db, timeout=30)
@@ -125,6 +135,8 @@ class Store:
         finally:
             db.close()
 
+    # 외부 MST와 달리 내부 version은 응답 원문 해시입니다.
+    # 이 해시로 DB 버전과 보관 XML/HTML을 연결해 과거 답변의 출처를 다시 열 수 있습니다.
     def archive_raw(self, raw):
         filename = hashlib.sha256(raw).hexdigest()[:20] + '.xml'
         (self.directory / 'raw' / filename).write_bytes(raw)
@@ -138,6 +150,8 @@ class Store:
             raise SetupError('임베딩 모델이 기존 DB와 다릅니다. 별도 DATA_DIR로 전체 법령을 재색인하세요.')
         texts = [body_text({'body': a.body}) for a in law.articles]
         titles = [f'{law.name} - {a.number}({a.title})' for a in law.articles]
+        # 요약·예상 질문 생성 캐시는 별도로 먼저 저장합니다. 이후 임베딩이 실패해도
+        # 재실행 시 이미 성공한 생성 결과를 다시 과금하며 만들 필요가 없게 합니다.
         metadata_keys = []
         if not keyword_only and callable(getattr(provider, 'generate_search_metadata', None)):
             from .search_metadata import prepare
@@ -156,6 +170,8 @@ class Store:
         packed = [(i, a, sqlite_vec.serialize_float32(v) if v is not None else None,
                    provider.fingerprint if v is not None else None)
                   for i, (a, v) in enumerate(zip(law.articles, vectors))]
+        # 한 버전의 조문·벡터·메타데이터 연결은 같은 DB 트랜잭션으로 갱신합니다.
+        # 위에서 보관한 파일은 DB 트랜잭션에 포함되지 않으며 실패 시 진단용으로 남을 수 있습니다.
         with self.connect() as db:
             db.execute('DELETE FROM version_articles WHERE version=?', (law.version,))
             db.execute('INSERT OR REPLACE INTO law_versions VALUES(?,?,?,?,?,?,?,?,?,?)',
@@ -215,6 +231,9 @@ class Store:
         except (ValueError, TypeError):
             return None
 
+    # 시행일이 기준일 이하인 것 중 가장 최신 버전을 선택합니다.
+    # 다음 개정의 시행 전까지는 마지막 버전이 계속 적용되므로 별도 종료일은 요구하지 않습니다.
+    # 단, API 연혁상 이미 시행된 더 최신 버전이 미수집이면 오래된 버전으로 대신 답하지 않습니다.
     def temporal_versions(self, as_of=None):
         cutoff = as_of or today_in_korea()
         with self.connect() as db:
@@ -244,6 +263,8 @@ class Store:
         return {'as_of': cutoff.isoformat(), 'versions': list(chosen.values()), 'missing': missing,
                 'note': '수집한 버전과 조회한 API 연혁을 기준으로 선택합니다. 미조회 개정의 존재 여부는 별도 확인이 필요합니다.'}
 
+    # 현재 기준일에 선택 가능한 버전 목록입니다. 수집된 모든 과거 버전의 총목록은
+    # 관리 API의 revisions(source='collected')에서 조회합니다.
     def list_laws(self):
         selected = self.temporal_versions()['versions']
         result = []
@@ -299,6 +320,8 @@ class Store:
         from .graph import expand
         return expand(self, evidence, **kwargs)
 
+    # 기존 검색 경로: 제목/본문 최소값과 가중합을 사용합니다.
+    # 채팅의 메타데이터 검색·필드별 RRF를 수정하려면 retrieval.py를 확인하세요.
     def search(self, question, provider, threshold=.48, limit=5, mode='hybrid', as_of=None, title_weight=.35, min_title=.15, min_body=.20, query_variants=None):
         if not 0 <= threshold <= 1:
             raise ValueError('임계치는 0~1이어야 합니다.')

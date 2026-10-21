@@ -7,6 +7,9 @@ from .store import grams, body_text, expanded_query
 from .search_metadata import load as load_metadata, source_hash
 
 
+# 현재 검색 구현입니다. 기준일에 맞는 버전에서 원질의와 재작성 질의를 함께 비교하고,
+# 제목·본문·검색 메타데이터의 신호를 결합한 뒤 원래 법조항을 결과로 반환합니다.
+# 아래 항·호·목 조각은 검색 위치를 찾는 용도이며, 답변 문맥에는 조 전체를 보존합니다.
 def fragments(body):
     """Search paragraph/item spans, but always return the complete parent article."""
     markers = list(re.finditer(r'(?m)^\s*(?:([①-⑳])|(\d+)\.[ \t]+|([가-힣])\.[ \t]+)', body))
@@ -26,6 +29,8 @@ def fragments(body):
     return result
 
 
+# 키워드 비교는 BM25가 아니라 한글·영숫자 2글자 집합의 겹침 비율입니다.
+# balanced는 질의 대비 일치율뿐 아니라 짧은 제목/메타데이터 쪽의 일치율도 반영합니다.
 def overlap(query, text, balanced=False):
     q, t = grams(query), grams(text)
     coverage = len(q & t) / max(1,len(q))
@@ -39,6 +44,8 @@ def content_overlap(query, text):
     return .8*len(q&t)/max(1,len(q)) + .2*len(q&t)/max(1,len(t))
 
 
+# RRF는 원점수 대신 각 목록의 순위로 1/(k+rank)를 합산합니다.
+# 한 목록 안의 같은 문서는 한 번만 기여하고, 목록에 없는 문서는 그 목록에서 0점입니다.
 def fuse(rankings, constant=60):
     scores = {}
     for ranking in rankings:
@@ -55,6 +62,9 @@ def field_rrf(per_query, mode, exact_ids=(), constant=60, depth=50, metadata_fie
     Original explicit law/article identifiers are pinned in each field instead
     of being counted as a third, unrelated RRF dimension.
     """
+    # 1차: 각 필드 안에서 원질의·rewrite의 키워드/벡터 순위를 결합합니다.
+    # 2차: 제목·본문 필드 순위를 결합하며, 메타데이터가 있으면 요약·질문 필드도 추가합니다.
+    # 질의 변형이나 예상 질문 개수가 많다고 최종 필드 투표 수가 늘어나지는 않습니다.
     fields = {'title': ('title', 'title_semantic'), 'body': ('lexical', 'semantic')}
     fields.update({field:(field+'_keyword', field+'_semantic') for field in metadata_fields})
     rankings, ranks = [], {}
@@ -117,6 +127,7 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
                              'effective':law['effective'], 'promulgated':law['promulgated'],
                              'source_url':law['source_url'], 'id':law['version']+':'+str(r['position'])}
                 item = metadata.get(r['position'])
+                # 원문이 달라진 오래된 요약을 새 조문에 연결하지 않도록 내용 해시를 확인합니다.
                 row['_metadata'] = item if item and item['source_hash']==source_hash(row) else {}
                 rows.append(row)
         if not rows:
@@ -125,6 +136,8 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
         fusion_metadata['rrf_fields'] += metadata_fields
         fusion_metadata['rrf_max_score'] = len(fusion_metadata['rrf_fields'])/61
         fusion_metadata['metadata_articles'] = sum(bool(r['_metadata']) for r in rows)
+        # 제목·본문 벡터는 동일 모델/차원이어야 합니다. 다른 모델의 벡터를 섞어 비교하지 않습니다.
+        # 질의 벡터는 한 번 생성해 모든 필드와 조문 비교에 재사용합니다.
         if mode == 'hybrid':
             if any(r['model'] != provider.fingerprint or r['vector'] is None or r['title_vector'] is None for r in rows):
                 raise SetupError('제목·본문 벡터가 없거나 임베딩 모델이 다릅니다. 저장 자료를 재임베딩하거나 키워드 검색을 선택하세요.')
@@ -164,6 +177,8 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
                     quality = max(quality,.95)
                 meta = metadata_scores(db,row['_metadata'],clean,vector)
                 metadata_quality = max(meta['summary'],meta['questions'])
+                # 통과 여부와 정렬은 구분합니다. RRF를 선택해도 순위만 높다는 이유로
+                # 무관한 후보를 통과시키지 않으며, 원문 또는 메타데이터의 임계치를 먼저 요구합니다.
                 original_eligible = quality >= threshold and (exact or content >= .20)
                 metadata_eligible = bool(meta['matched_metadata']) and metadata_quality >= threshold
                 combined = max(quality if original_eligible else 0., metadata_quality if metadata_eligible else 0.)
@@ -177,6 +192,8 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
             per_query.append(scored)
     exact_ids = [s['row']['id'] for s in per_query[0] if s['exact']]
     rrf, field_ranks = field_rrf(per_query, mode, exact_ids, metadata_fields=metadata_fields)
+    # RRF 원점수를 활성 필드 수/(60+1)로 나눠 표시용 0~1 점수로 만듭니다.
+    # 이는 이론상 최대값 대비 비율이며 법적 정확도나 답변 정답 확률이 아닙니다.
     normalizer = fusion_metadata['rrf_max_score']
     result = []
     for i,row in enumerate(rows):
@@ -207,6 +224,8 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
             retrieval_queries=[s['query'] for s in observations if s['original_eligible'] or s['metadata_eligible']],
             html_url='/documents/'+row['version']+'.html#'+quote(row['section_id'],safe=''))
         result.append(out)
+    # UI는 계산 방식과 무관하게 score를 '관련도 점수'로 표시합니다.
+    # compare도 같은 후보·같은 계산 결과에서 정렬 방식만 달리해 비교합니다.
     def ranked(method):
         ordered = sorted(result,key=lambda r:(-r[method+'_score'],-r['weighted_score'],r['id']))[:limit]
         return [{**r,'score':r[method+'_score'],'fusion':method} for r in ordered]

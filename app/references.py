@@ -13,6 +13,8 @@ class Annex:
     source_url: str = ''
 
 
+# 별표 번호·제목·추출 가능한 텍스트와 공식 파일 링크를 분리해 저장합니다.
+# 링크만 있는 별표는 본문 미확보 상태이며, 파일 다운로드/OCR을 수행하는 함수는 아닙니다.
 def parse_annexes(root, law_name):
     from .laws import text, content_text
     result = []
@@ -45,6 +47,9 @@ def parse_annexes(root, law_name):
     return result
 
 
+# 인용 바로 앞 문맥으로 대상 법령을 추정합니다. 명시된 「법령명」을 우선하고,
+# '같은 법', '영'처럼 확인이 필요한 표시는 graph.py에서 약칭 선언과 함께 해석합니다.
+# 완전한 법률 문법 분석기가 아니므로 불명확한 관계를 확정 사실로 다루면 안 됩니다.
 def reference_target(body, position, own_law):
     prefix = re.split(r'[.\n。]', body[:position])[-1]
     if re.search(r'이\s*법\s*$', prefix):
@@ -78,6 +83,8 @@ def annex_references(body, own_law):
     return sorted(result)
 
 
+# 조문 번호와 대상 법령의 쌍만 추출합니다. 실제 수집 여부·시점·본문 존재 검사는
+# 이 함수를 사용하는 저장소/문맥 확장 계층에서 수행합니다.
 def article_links(body, own_law, source_number=''):
     result = set()
     for match in re.finditer(r'제\s*(\d+)\s*조(?:\s*의\s*(\d+))?', body):

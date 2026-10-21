@@ -13,6 +13,8 @@ from .store import Store
 from .search_metadata import MetadataBatchError, batches, bind, identity, now, prepare, vectors_ready
 
 
+# 기존 수집 조문의 요약·예상 질문을 채우는 CLI입니다: python -m app.enrich_metadata
+# 법령 API를 다시 호출하지 않고 저장된 본문을 사용하며 --law로 범위, --status로 현황을 봅니다.
 def storage_error(exc):
     """Preserve OS diagnostics without printing exception payloads or secrets."""
     codes = [f'{key}={getattr(exc,key)}' for key in ('errno','winerror','sqlite_errorname')
@@ -30,6 +32,8 @@ def storage_error(exc):
     return detail + (f' [{", ".join(codes)}]' if codes else f' [{type(exc).__name__}]')
 
 
+# JSON 보고서는 사람이 확인하는 내보내기 파일이며 재개 기준은 DB입니다.
+# 임시 파일을 닫은 뒤 교체해야 Windows에서도 동작하고 기존 보고서를 도중에 훼손하지 않습니다.
 def write_report(path, report):
     """An independent export, never the resume checkpoint. Close before Windows rename."""
     temporary = None
@@ -101,6 +105,7 @@ def backfill(store, provider, report_path, law=None, notify=print):
         report['items'].append({'version':row['version'],'position':row['position'],
                                'name':row['law_name'],'number':row['number'],'status':result,'error':error})
 
+    # 실패 상태와 이유는 기록하되 이전에 사용 가능했던 메타데이터 연결은 지우지 않습니다.
     def fail(rows, error):
         with store.connect() as db:
             for row in rows:
@@ -122,6 +127,8 @@ def backfill(store, provider, report_path, law=None, notify=print):
                     bind(db,row['version'],row['position'],key)
             for row in pending:
                 record(row,'completed')
+        # 부분 실패가 난 배치에서 성공한 조문까지 실패 처리하지 않습니다.
+        # 생성 캐시에 남은 성공분은 재생성 없이 임베딩·연결 단계만 이어 갑니다.
         except MetadataBatchError as exc:
             good = []
             for row in pending:
@@ -149,6 +156,8 @@ def backfill(store, provider, report_path, law=None, notify=print):
                     saved = db.execute('''SELECT b.metadata_key,m.summary,m.questions FROM article_metadata b
                         JOIN search_metadata m ON m.key=b.metadata_key WHERE b.version=? AND b.position=?''',
                         (row['version'],row['position'])).fetchone()
+                    # 단순 완료 플래그가 아니라 원문/생성 모델 식별자와 실제 벡터 존재를 확인합니다.
+                    # 같은 명령을 재실행하면 완료분은 건너뛰고 실패·미처리분부터 이어집니다.
                     complete = saved and saved['metadata_key'] == key and vectors_ready(db,key,
                         {'summary':saved['summary'],'questions':json.loads(saved['questions'])},provider.fingerprint)
                     if complete:
@@ -161,6 +170,7 @@ def backfill(store, provider, report_path, law=None, notify=print):
             process(pending)
             save()
             notify(f'{len(report["items"])}/{len(rows)} 조문 · 완료 {report["completed"]}, 기존 완료 {report["skipped"]}, 실패 {report["failed"]}')
+    # 중단 시 보고서 저장은 최선을 다해 수행합니다. 이전 배치의 DB commit은 유지됩니다.
     except (Exception,KeyboardInterrupt):
         report['interrupted_at'] = now()
         save(force=True)

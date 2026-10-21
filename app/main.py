@@ -15,6 +15,8 @@ from .store import Store
 from .management import Management, management_router
 from .chat_pipeline import retrieve, run_chat, STAGES
 
+# HTTP 진입점과 요청 검증을 담당합니다. 검색·답변 로직은 chat_pipeline.py,
+# 수집 작업과 이력은 management.py, DB 접근은 store.py로 이어집니다.
 class SearchRequest(BaseModel):
     question: str = Field(min_length=2, max_length=2000)
     threshold: float | None = Field(default=None, ge=0, le=1)
@@ -27,6 +29,8 @@ class Message(BaseModel):
     role: Literal['user', 'assistant']
     content: str = Field(max_length=6000)
 
+# 대화 이력은 브라우저가 요청에 담아 보냅니다. 이 API는 서버에 대화를 저장하지 않습니다.
+# 길이와 개수를 제한해 과거 대화가 프롬프트를 무제한으로 차지하지 않도록 합니다.
 class ChatRequest(SearchRequest):
     model: str | None = Field(default=None, min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._:-]+$")
     history: list[Message] = Field(default_factory=list, max_length=6)
@@ -36,6 +40,8 @@ class IngestRequest(BaseModel):
     keyword_only: bool = False
 
 
+# 테스트에서는 설정·외부 API 대역을 주입할 수 있습니다.
+# 앱 생성 시 DB 초기화와 이전 수집 작업의 중단 상태 정리도 함께 수행됩니다.
 def create_app(settings=None, provider=None, law_api=None):
     settings = settings or Settings()
     store = Store(settings.data_dir)
@@ -58,6 +64,8 @@ def create_app(settings=None, provider=None, law_api=None):
     @app.middleware('http')
     async def local_security(request: Request, call_next):
         # Local development app: prevent cross-origin browser mutation requests.
+        # 브라우저의 다른 사이트에서 수집 요청을 보내는 것을 막는 검사입니다.
+        # 로그인이나 사용자별 접근 권한을 제공하는 인증 기능은 아닙니다.
         origin = request.headers.get('origin')
         if request.method == 'POST' and origin and origin.rstrip('/') != str(request.base_url).rstrip('/'):
             return JSONResponse(status_code=403, content={'detail': '동일 출처 요청만 허용됩니다.'})
@@ -96,6 +104,7 @@ def create_app(settings=None, provider=None, law_api=None):
         return {'models': list(dict.fromkeys([settings.chat_model] + presets + available)),
                 'available': available, 'default': settings.chat_model, 'warning': warning}
 
+    # 검색 API는 후보 조회용입니다. LLM 관련성 검토와 답변 생성은 채팅 API에서 수행합니다.
     @app.post('/api/search')
     def search(body: SearchRequest):
         return retrieve(store, provider, settings, body)
@@ -111,6 +120,7 @@ def create_app(settings=None, provider=None, law_api=None):
             threshold=settings.threshold if body.threshold is None else body.threshold,
             limit=body.limit,mode=body.mode,compare=True)
 
+    # 요청마다 모델을 분리해야 동시에 접속한 사용자의 선택이 서로 영향을 주지 않습니다.
     def chat_provider(body):
         return provider.for_model(body.model or settings.chat_model) if hasattr(provider, 'for_model') else provider
 
@@ -118,10 +128,14 @@ def create_app(settings=None, provider=None, law_api=None):
     def chat(body: ChatRequest):
         return run_chat(store, chat_provider(body), settings, body)
 
+    # 스트림은 토큰 단위 답변이 아니라 실제 처리 단계와 최종 결과를 NDJSON으로 전달합니다.
+    # 동기 작업은 별도 스레드에서 실행하고, Queue를 통해 HTTP 응답 쪽으로 이벤트를 넘깁니다.
     @app.post('/api/chat/stream')
     def chat_stream(body: ChatRequest):
         selected = chat_provider(body)
         events, cancelled = Queue(), Event()
+        # 연결이 끊기면 다음 단계 진입 시 중단합니다. 이미 진행 중인 외부 API 호출은
+        # 즉시 취소되지 않으므로 Provider의 타임아웃도 별도로 적용됩니다.
         def progress(stage):
             if cancelled.is_set():
                 raise InterruptedError()
@@ -156,6 +170,8 @@ def create_app(settings=None, provider=None, law_api=None):
         return StreamingResponse(stream(), media_type='application/x-ndjson',
                                  headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
+    # 출처 HTML은 원문 해시로 지정된 수집 버전을 보여줍니다.
+    # 파일명 형식을 제한해 임의 경로 접근을 막고, 뷰어 갱신도 같은 XML로만 수행합니다.
     @app.get('/documents/{filename}')
     def document(filename: str):
         import re

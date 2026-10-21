@@ -6,6 +6,8 @@ import socket
 import uvicorn
 
 
+# 접속 주소 안내용 IPv4 후보입니다. VPN/복수 랜카드 환경에서는 여러 주소가 나올 수 있어
+# 실제 공유할 회사망 주소는 사용자가 확인해야 합니다. 이 함수는 방화벽을 변경하지 않습니다.
 def lan_addresses():
     try:
         addresses = {row[4][0] for row in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
@@ -30,6 +32,8 @@ def main(argv=None):
             print(f'내부망 접속 주소 후보: http://{address}:{args.port}', flush=True)
         print('ipconfig의 회사망 IPv4 주소를 공유하세요. 방화벽에서 해당 포트의 내부망 접근을 허용해야 합니다.', flush=True)
         print('법령·수집 내역은 공유하고, 대화 이력은 접속한 브라우저별로 저장합니다.', flush=True)
+    # 기본은 내 PC만 접속, --lan은 모든 IPv4 인터페이스에서 지정 포트로 수신합니다.
+    # 수집 잠금·중단 복구는 프로세스 내부 기준이므로 여러 worker로 늘리지 않습니다.
     uvicorn.run('app.main:app', host='0.0.0.0' if args.lan else '127.0.0.1', port=args.port, workers=1)
 
 

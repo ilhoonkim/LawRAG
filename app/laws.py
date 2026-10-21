@@ -12,10 +12,14 @@ from .references import Annex, parse_annexes, article_links, reference_target
 from urllib.parse import quote
 import httpx
 
+# 수집 진입부: LawAPI로 XML 수신 → parse_law/parse_admrul로 공통 Law 구조 변환
+# → Store.ingest에서 저장·임베딩. 여기서는 외부 데이터를 해석하고 HTML을 구성합니다.
 class SetupError(ValueError):
     pass
 
 
+# XML은 외부 입력입니다. DTD/엔터티 확장은 허용하지 않으며 파싱 오류는
+# OC가 들어갈 수 있는 요청 URL 대신 설정 확인용 메시지로 전달합니다.
 def xml_root(raw: bytes):
     if re.search(br'<!\s*(DOCTYPE|ENTITY)', raw, re.I):
         raise ValueError('DTD 및 외부 엔터티가 포함된 XML은 지원하지 않습니다.')
@@ -50,6 +54,8 @@ class Article:
     chapter: str = ""
 
 
+# id는 법령 식별자, version은 수신한 원문 바이트의 SHA-256 앞 20자리입니다.
+# 시행일·공포일은 API의 YYYYMMDD 형식을 유지하고 날짜 판단은 temporal/Store에서 합니다.
 @dataclass
 class Law:
     id: str
@@ -72,6 +78,7 @@ def parse_law(raw: bytes) -> Law:
     articles = []
     headings = {}
     for node in root.findall('.//조문단위'):
+        # 편·장·절·관 표제는 검색 조문으로 만들지 않고 다음 조문의 상위 목차로 유지합니다.
         if text(node, '조문여부') == '전문':
             heading = text(node, '조문내용')
             match = re.match(r'제\s*\d+\s*([편장절관])', heading)
@@ -124,6 +131,9 @@ def render_html(law: Law) -> str:
         # Numeric selectors keep law text out of CSS, while standalone HTML
         # still highlights the matching TOC entry without JavaScript.
         target_styles.append(f'body:has(.law-content section:nth-of-type({index}):target) .toc a[data-section-index="{index}"]' + '{background:#eaf0ff;color:#3f4b9c;font-weight:600}')
+    # API에서 완성된 링크를 받는 것이 아닙니다. 본문의 '제N조'를 찾아 같은 법령의
+    # 실제 조문과 매칭한 뒤 이 HTML 안의 앵커로 연결합니다. 타 법령 참조는 자동 연결하지 않습니다.
+    # 표시용 링크 생성과 LLM 문맥 확장(graph.py)은 별도 처리입니다.
     def annotated_body(article):
         by_number = {a.number: a for a in law.articles}
         parts, cursor = [], 0
@@ -184,6 +194,9 @@ class LawAPI:
             return self._search_page(query, page, kind, display)
         # law is the promulgation-based search; eflaw provides effective-date
         # versions. nw=1,3 selects historical/current, excluding scheduled.
+        # 법령 연혁은 시행일 기준 eflaw 결과를 모으고, 행정규칙은 admrul 결과를 모읍니다.
+        # 모두 중복을 제거한 뒤 페이지를 나누어 반환합니다.
+        # 현재 법령명 검색 결과 한 건을 개정 이력 전체로 오인하지 않도록 경로를 분리합니다.
         key = (query, kind)
         with self._revision_lock:
             cached = self._revision_cache.get(key)
@@ -238,6 +251,8 @@ class LawAPI:
              'status': text(n, '현행연혁코드'), 'kind': kind, 'law_id': text(n,'법령ID')}
             for n in nodes]}
 
+    # 선택한 개정 버전을 재현하려면 MST와 시행일(efYd)이 함께 필요합니다.
+    # 시행일이 없는 기존 호출은 law 본문 API를 사용하므로 호출자가 차이를 알아야 합니다.
     def fetch(self, mst, kind='law', effective=''):
         if kind == 'admrul':
             return self.request('lawService.do', target='admrul', ID=mst)

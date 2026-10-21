@@ -7,6 +7,8 @@ from time import perf_counter
 from .laws import SetupError
 
 logger = logging.getLogger(__name__)
+# 관련성 검토는 후보를 한 건씩 순차 호출하지 않고 묶음으로 처리합니다.
+# 채팅에서 상위 15개를 먼저 고르며, 본문이 길면 아래 문자 예산으로 묶음을 나눕니다.
 BATCH_CHAR_LIMIT = 60000
 
 SYSTEM = (
@@ -39,6 +41,8 @@ def response_format(model, count):
                 'conditions':{'type':'array','items':{'type':'string'}}}}}}}}}
 
 
+# 모델이 반환한 id로 원래 후보를 연결합니다. 응답 순서를 믿거나 누락된 판정을
+# 임의로 통과시키면 다른 조문이 근거가 될 수 있어 개수·중복·역할까지 검증합니다.
 def parse_decisions(response, count):
     """Return accepted IDs; errors contain categories, never upstream content."""
     try:
@@ -106,6 +110,8 @@ def filter_evidence(provider, question, candidates):
         documents = [{'id':i,**doc} for i,(_,doc) in enumerate(batch,1)]
         issue = None
         started = perf_counter()
+        # 형식 오류에 한해 같은 묶음을 한 번 재시도합니다. 재시도 후에도 판정할 수 없으면
+        # 검토되지 않은 후보로 답변을 진행하지 않고 호출자에게 실패를 알립니다.
         for attempt in range(2):
             payload = {'question':question,'candidates':documents}
             if issue:
@@ -132,5 +138,6 @@ def filter_evidence(provider, question, candidates):
         return verify(batches[0])
     # Long bodies remain intact. Run at most two batches together, preserving
     # ranked order and failing the request if any batch remains unverified.
+    # 긴 본문은 보존하면서 최대 두 묶음을 병렬 검토합니다. map은 입력 순서를 유지합니다.
     with ThreadPoolExecutor(max_workers=2) as pool:
         return [row for approved in pool.map(verify,batches) for row in approved]

@@ -4,6 +4,8 @@ from .provider import Provider
 from .laws import SetupError
 
 
+# python -m app.check_ai: 서버와 같은 Settings/Provider로 실제 짧은 임베딩 요청을 보냅니다.
+# 키 값은 출력하지 않으며, 성공해도 법령 API 연결이나 DB 저장까지 검증한 것은 아닙니다.
 def main():
     settings = Settings()
     print('AI 키 읽기:', '확인됨' if settings.api_key else '없음')

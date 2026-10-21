@@ -32,6 +32,8 @@ class CollectionItem(BaseModel):
     effective: str = Field(default='', max_length=20)
 
 
+# 관리 화면의 수집은 본문 저장부터 임베딩까지 한 작업으로 취급합니다.
+# keyword_only는 요청 호환성을 위해 남아 있지만 이 경로에서는 False만 허용됩니다.
 class CollectionInput(BaseModel):
     items: list[CollectionItem] = Field(min_length=1, max_length=30)
     keyword_only: Literal[False] = False
@@ -40,6 +42,8 @@ class CollectionInput(BaseModel):
 class Management:
     def __init__(self, store, provider, api, *, recover_pending=True):
         self.store, self.provider, self.api = store, provider, api
+        # 이 잠금은 한 프로세스 안에서 수집을 직렬화합니다. 분산 작업 큐가 아니므로
+        # serve.py는 worker를 하나로 실행합니다. DB의 이력은 진행 중에도 조회할 수 있습니다.
         self.worker_lock = threading.Lock()
         with store.connect() as db:
             db.executescript('''
@@ -55,6 +59,8 @@ class Management:
             for row in db.execute('SELECT DISTINCT name,kind FROM law_versions').fetchall():
                 if not db.execute('SELECT 1 FROM categories WHERE kind=? AND compact_name(name)=?', (row['kind'],normalize_name(row['name']))).fetchone():
                     db.execute('INSERT OR IGNORE INTO categories(name,kind) VALUES(?,?)', (row['name'],row['kind']))
+            # 서버 재시작 시 이전 프로세스의 대기/실행 작업을 자동 재실행하지 않습니다.
+            # 중단으로 기록해 사용자가 재수집할 수 있게 하고 조회 전용 CLI에서는 이 처리를 끕니다.
             if recover_pending:
                 db.execute("UPDATE collection_history SET status='interrupted', reason='서버가 종료되어 수집이 중단되었습니다. 다시 수집해 주세요.', finished_at=? WHERE status IN ('queued','running')", (now(),))
 
@@ -70,6 +76,8 @@ class Management:
             db.execute('INSERT OR IGNORE INTO categories(name,kind) VALUES(?,?)', (name, kind))
         return self.categories()
 
+    # API 연혁 한 건에 DB의 수집 버전과 마지막 작업 상태를 붙여 화면에 전달합니다.
+    # '현재 적용'은 단순 활성 플래그가 아니라 기준일 버전 선택 결과로 판단합니다.
     def decorate(self, item):
         item = dict(item)
         with self.store.connect() as db:
@@ -84,6 +92,8 @@ class Management:
                     reason=event['reason'] if event else '')
         return item
 
+    # API 검색 결과에는 시행령·시행규칙 같은 유사 이름도 섞입니다. 전체 페이지를 확인한 뒤
+    # 정확한 법령명과 시행일로 걸러야 건수와 UI 페이지가 실제 개정 버전을 나타냅니다.
     def revisions(self, query, kind, page, source):
         if source == 'api':
             # Filter the full API result before pagination, so 시행령/시행규칙
@@ -143,6 +153,7 @@ class Management:
         batch = uuid4().hex
         ids = []
         with self.store.connect() as db:
+            # 중복 확인과 대기 이력 등록을 한 쓰기 트랜잭션으로 묶어 동시 요청 중복을 막습니다.
             db.execute('BEGIN IMMEDIATE')
             for item in request.items:
                 if item.effective and not self.collectible_date(item.effective):
@@ -168,10 +179,13 @@ class Management:
                 raw_filename = ''
                 try:
                     raw = self.api.fetch(event['mst'], kind=event['kind'], effective=event['effective'])
+                    # 파싱 실패도 원문을 조사할 수 있게 먼저 보관합니다. 저장 파일명은 원문 해시입니다.
                     raw_filename = self.store.archive_raw(raw)
                     law = parse_admrul(raw) if event['kind'] == 'admrul' else parse_law(raw)
                     if not self.collectible_date(law.effective):
                         raise ValueError('오늘 이후 시행 예정이거나 시행일이 잘못된 본문은 저장하지 않았습니다.')
+                    # API가 다른 시행 버전의 본문을 반환하면 그대로 저장하지 않습니다.
+                    # 법령 본문 조회 시 MST 외에 시행일도 전달하는 이유가 이 버전 일치 조건입니다.
                     if normalize_name(law.name) != normalize_name(event['name']) or (event['effective'] and law.effective != event['effective']):
                         raise ValueError(f'본문 응답 불일치: 요청 {event["name"]} / 시행 {event["effective"]}, 응답 {law.name} / 시행 {law.effective}.')
                     result = self.store.ingest(raw, self.provider, bool(event['keyword_only']),
@@ -253,6 +267,8 @@ def management_router(manager):
     def revision_status(body: CollectionInput):
         return {'items': [manager.decorate({'id': item.mst, **item.model_dump()}) for item in body.items]}
 
+    # 202는 수집 완료가 아니라 대기 이력 등록 성공입니다.
+    # 실제 완료/실패는 백그라운드 작업이 기록하며 /history에서 확인합니다.
     @router.post('/collections', status_code=202)
     def collect(body: CollectionInput, background: BackgroundTasks):
         result = manager.queue(body)

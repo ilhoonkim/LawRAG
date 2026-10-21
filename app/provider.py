@@ -6,6 +6,8 @@ import httpx
 from .laws import SetupError
 
 
+# 외부 AI 서비스와 통신하는 공통 계층입니다. 호출 실패는 안전한 범주로 변환해
+# UI와 수집 이력에 전달하며, 인증 헤더·응답 원문·키가 포함된 URL은 노출하지 않습니다.
 def api_failure(response):
     """Report useful failure categories without echoing upstream secrets/URLs."""
     try:
@@ -47,6 +49,8 @@ class Provider:
     def __init__(self, settings):
         self.settings = settings
 
+    # 사용자가 고른 모델은 이번 대화의 답변과 관련성 검토에 함께 적용됩니다.
+    # 임베딩·메타데이터 생성 모델은 변경하지 않습니다.
     def for_model(self, model):
         # Per-request instance: concurrent chats never mutate the collector/model.
         return Provider(replace(self.settings, chat_model=model, rerank_model=model))
@@ -66,6 +70,8 @@ class Provider:
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
             raise SetupError('모델 목록을 조회하지 못했습니다. 기본 목록 또는 모델 ID 직접 입력을 사용하세요.') from None
 
+    # 모델명만 같아도 API 제공자가 다르면 벡터 공간이 다를 수 있어 주소까지 식별합니다.
+    # 저장 벡터와 질의 벡터가 이 값과 차원 모두 일치해야 의미 비교가 가능합니다.
     @property
     def fingerprint(self):
         return self.settings.base_url.rstrip('/') + '|' + self.settings.embedding_model
@@ -90,6 +96,8 @@ class Provider:
         except ValueError:
             raise SetupError('AI API 요청 실패 [응답 형식 오류]: API가 JSON 응답을 반환하지 않았습니다. LLM_BASE_URL을 확인하세요.') from None
 
+    # 입력 순서를 보존한 벡터 목록을 반환합니다. API가 응답 순서를 바꿔도 index로 복원하며,
+    # 누락·중복 인덱스, 비정상 수치, 영벡터를 저장 전에 차단합니다.
     def embed(self, texts):
         if any(len(t) > 24000 for t in texts):
             raise ValueError('매우 긴 조문이 있습니다. 현재 조 단위 임베딩 입력 한도(24,000자)를 초과했습니다.')
@@ -107,6 +115,8 @@ class Provider:
                 vectors.append(vector)
         return vectors
 
+    # Store.search()의 기존 검색어 확장 경로입니다. 현재 채팅은 rewrite_question()과
+    # assess_evidence()를 사용하며, 검색어를 법적 근거로 취급하지 않는 원칙은 같습니다.
     def search_queries(self, question, candidates=None):
         """Translate everyday wording into search terms, never legal evidence."""
         try:
@@ -166,6 +176,8 @@ class Provider:
         from .search_metadata import generate
         return generate(self, documents)
 
+    # 관련성 검토와 달리, 확보한 근거 전체로 질문에 답할 수 있는지를 확인합니다.
+    # missing_issues는 추가 검색할 법적 쟁점, missing_facts는 사용자에게 확인할 사건 사실입니다.
     def assess_evidence(self, question, evidence, missing_references, as_of):
         documents = [{"id":i, **{k:e.get(k,'') for k in ('law_name','number','title','body','effective','evidence_role','application_conditions')}}
                      for i,e in enumerate(evidence,1)]
@@ -199,6 +211,9 @@ class Provider:
         except (ValueError,KeyError,IndexError,TypeError):
             raise SetupError('근거 충분성 검토 응답을 확인할 수 없습니다. 다시 시도해 주세요.') from None
 
+    # 검색용 요약·예상 질문 대신 실제 조문 본문을 답변 근거로 전달합니다.
+    # 화면에 보이는 추천 근거만 [1], [2] 번호를 받으며, 연결 조문은 별도 문맥으로 제공합니다.
+    # 이 순서가 프런트엔드 출처 번호와 일치해야 인용 클릭이 올바른 조문을 가리킵니다.
     def answer(self, question, evidence, history, missing_references=None, assessment=None):
         recommended = [e for e in evidence if not e.get('relation')]
         linked = [e for e in evidence if e.get('relation')]
