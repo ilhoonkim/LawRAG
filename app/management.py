@@ -10,7 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 from .laws import SetupError, parse_law, parse_admrul
 from .temporal import today_in_korea
-from .catalog import register_catalog, normalize_name
+from .catalog import normalize_name
 
 Kind = Literal['law', 'admrul']
 
@@ -66,7 +66,8 @@ class Management:
                     mst TEXT, effective TEXT, fetched_at TEXT, payload TEXT,
                     PRIMARY KEY(mst,effective));
             ''')
-            register_catalog(db)
+            # 사전 수집 목록은 CLI의 입력일 뿐 화면 카테고리가 아닙니다.
+            # 빈 DB를 만들 때 이전의 부동산 기본 목록을 다시 등록하지 않습니다.
             for row in db.execute('SELECT DISTINCT name,kind FROM law_versions').fetchall():
                 if not db.execute('SELECT 1 FROM categories WHERE kind=? AND compact_name(name)=?', (row['kind'],normalize_name(row['name']))).fetchone():
                     db.execute('INSERT OR IGNORE INTO categories(name,kind) VALUES(?,?)', (row['name'],row['kind']))
@@ -78,7 +79,11 @@ class Management:
 
     def categories(self):
         with self.store.connect() as db:
-            return [dict(r) for r in db.execute('SELECT * FROM categories ORDER BY kind DESC, name')]
+            # 이전 버전이 남긴 기본/수동 등록 행은 삭제하지 않되, 실제 수집 버전이
+            # 없는 항목은 숨깁니다. 마지막 버전을 지우면 재시작 없이 다음 조회에 반영됩니다.
+            return [dict(r) for r in db.execute('''SELECT c.* FROM categories c WHERE EXISTS
+                (SELECT 1 FROM law_versions v WHERE v.kind=c.kind AND compact_name(v.name)=compact_name(c.name))
+                ORDER BY c.kind DESC, c.name''')]
 
     def add_category(self, name, kind):
         name = name.strip()

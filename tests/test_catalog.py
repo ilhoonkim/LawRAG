@@ -40,20 +40,32 @@ def small_catalog(monkeypatch):
     return value
 
 
-def test_current_names_and_migration_preserve_collected_history(tmp_path):
+def test_catalog_is_cli_input_and_empty_or_deleted_laws_are_not_categories(tmp_path):
     store = Store(tmp_path)
     manager = Management(store,FakeProvider(),HistoryAPI())
     names = {i['name'] for i in catalog.CATALOG['items']}
     assert len(names)==27
     assert {'공인중개사법','민간임대주택에 관한 특별법','공공주택 특별법'} <= names
     assert '임대주택법' not in names
-    assert len(manager.categories())==27
+    assert manager.categories()==[]
     assert manager.history(1)['total']==0
-    # An obsolete, uncollected seeded name is removed on catalog migration.
+    # 이전 앱이 기본 목록을 등록해 둔 DB도 실제 수집 자료가 없으면 비어 있어야 합니다.
     with store.connect() as db:
-        db.execute('DELETE FROM catalog_registrations')
-        db.execute("INSERT INTO categories(name,kind) VALUES('임대주택법','law')")
-    assert len(Management(store,FakeProvider(),HistoryAPI()).categories())==27
+        catalog.register_catalog(db)
+    assert Management(store,FakeProvider(),HistoryAPI()).categories()==[]
+    first = store.ingest(RAW,FakeProvider(),archive_only=True)
+    second = store.ingest(RAW.replace(b'20260101',b'20200101'),FakeProvider(),archive_only=True)
+    manager = Management(store,FakeProvider(),HistoryAPI())
+    assert [r['name'] for r in manager.categories()]==['선박안전법']
+    with store.connect() as db:
+        db.execute('DELETE FROM version_articles WHERE version=?',(first['version'],))
+        db.execute('DELETE FROM law_versions WHERE version=?',(first['version'],))
+    assert [r['name'] for r in manager.categories()]==['선박안전법']  # 과거 버전이 남아 있으면 유지
+    with store.connect() as db:
+        db.execute('DELETE FROM version_articles WHERE version=?',(second['version'],))
+        db.execute('DELETE FROM law_versions WHERE version=?',(second['version'],))
+    assert manager.categories()==[]
+    assert Management(store,FakeProvider(),HistoryAPI()).categories()==[]
 
 
 def test_preload_collects_all_versions_and_aliases_and_retries_safely(tmp_path, small_catalog):
