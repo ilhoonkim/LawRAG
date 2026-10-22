@@ -74,6 +74,7 @@ class Management:
             # 중단으로 기록해 사용자가 재수집할 수 있게 하고 조회 전용 CLI에서는 이 처리를 끕니다.
             if recover_pending:
                 db.execute("UPDATE collection_history SET status='interrupted', reason='서버가 종료되어 수집이 중단되었습니다. 다시 수집해 주세요.', finished_at=? WHERE status IN ('queued','running')", (now(),))
+                db.execute("UPDATE delegation_snapshots SET status='failed',reason='위임관계 갱신이 중단되었습니다. 관계 보완 명령으로 재시도하세요.' WHERE status IN ('running','pending')")
 
     def categories(self):
         with self.store.connect() as db:
@@ -159,9 +160,9 @@ class Management:
         if settings is not None and not settings.api_key:
             raise SetupError('.env의 LLM_API_KEY를 입력하고 서버를 재시작하세요. 수집은 임베딩까지 완료해야 합니다.')
 
-    def plan_collection(self, request):
+    def plan_collection(self, request, *, current_only=False):
         from .hierarchy import build_plan
-        plan = build_plan(self, request.items)
+        plan = build_plan(self, request.items, current_only=current_only)
         plan_id = uuid4().hex
         with self.store.connect() as db:
             db.execute('INSERT INTO collection_plans VALUES(?,?,?,?)',
@@ -209,7 +210,7 @@ class Management:
                 ids.append(event_id)
         return {'batch': batch, 'queued': len(ids), 'ids': ids}
 
-    def run(self, ids):
+    def run(self, ids, plan_id=None, delegation_attempted=None, *, with_relations=True):
         # One API/embedding request stream at a time; queue/status remains readable.
         with self.worker_lock:
             for event_id in ids:
@@ -248,6 +249,27 @@ class Management:
                     with self.store.connect() as db:
                         db.execute("UPDATE collection_history SET status='failed',finished_at=?,reason=? WHERE id=?", (now(), reason, event_id))
 
+            if not with_relations:
+                return
+            # 본문 수집을 모두 마친 뒤 관계를 매핑해야 아직 대기 중인 동반 법령을
+            # 누락으로 확정하지 않습니다. 실패/재시도 상태는 본문 이력과 별도로 저장합니다.
+            versions = set()
+            with self.store.connect() as db:
+                for event_id in ids:
+                    row = db.execute("SELECT version FROM collection_history WHERE id=? AND kind='law' AND status='completed'", (event_id,)).fetchone()
+                    if row:
+                        versions.add(row['version'])
+                if plan_id:
+                    row = db.execute('SELECT payload FROM collection_plans WHERE id=?', (plan_id,)).fetchone()
+                    for item in json.loads(row['payload'])['items'] if row else []:
+                        stored = db.execute("SELECT version FROM law_versions WHERE kind='law' AND mst=? AND effective=?", (item['mst'], item['effective'])).fetchone()
+                        if stored:
+                            versions.add(stored['version'])
+            from .delegation import refresh
+            attempted = delegation_attempted if delegation_attempted is not None else set()
+            for version in sorted(versions):
+                refresh(self.store, self.api, version, attempted)
+
     def history(self, page, batch=None):
         where, args = ('WHERE batch=?', (batch,)) if batch else ('', ())
         with self.store.connect() as db:
@@ -274,6 +296,12 @@ class Management:
                 row['hierarchy_status'] = 'incomplete' if states[row['batch']] or plan['warnings'] else 'completed'
                 row['hierarchy_missing'] = states[row['batch']]
                 row['hierarchy_warnings'] = plan['warnings']
+        from .delegation import status
+        for row in rows:
+            if row['kind'] == 'law' and row['version']:
+                row['delegation'] = status(self.store, row['version'])
+        with self.store.connect() as db:
+            pending += db.execute("SELECT count(*) FROM delegation_snapshots WHERE status IN ('running','pending')").fetchone()[0]
         return {'items': rows, 'total': total, 'page': page, 'pending': pending, 'last_completed': last}
 
     def articles(self, version, page):
@@ -330,8 +358,8 @@ def management_router(manager):
     @router.post('/collections', status_code=202)
     def collect(body: PlannedCollectionInput | CollectionInput, background: BackgroundTasks):
         result = manager.queue_plan(body.plan_id) if isinstance(body, PlannedCollectionInput) else manager.queue(body)
-        if result['ids']:
-            background.add_task(manager.run, result['ids'])
+        if result['ids'] or result.get('plan_id'):
+            background.add_task(manager.run, result['ids'], result.get('plan_id'))
         return result
 
     @router.post('/collection-plan')

@@ -135,7 +135,7 @@ def reference_heading(number, title):
     return display + (f'({title})' if title and title not in (number, display) else '')
 
 
-def render_html(law: Law, *, reference_resolver=None, reference_date=None) -> str:
+def render_html(law: Law, *, reference_resolver=None, reference_date=None, delegation_links=None) -> str:
     esc = html.escape
     toc_parts, sections, target_styles = [], [], []
     last_chapter = ''
@@ -183,7 +183,11 @@ def render_html(law: Law, *, reference_resolver=None, reference_date=None) -> st
             sections.append(f'<h3 class="chapter-heading">{esc(article.chapter)}</h3>')
             last_chapter = article.chapter
         add_toc(article, index)
-        sections.append(f'<section id="{esc(article.section_id, quote=True)}"><h2>{esc(heading(article.number,article.title))}</h2><pre>{annotated_body(article)}</pre></section>')
+        related = (delegation_links or {}).get(article.number, [])
+        connections = ''.join(f'<li>{esc(r["label"])}: <a href="{esc(r["url"], quote=True)}">'
+            f'{esc(r["name"])} {esc(heading(r["number"], r["title"]))}</a></li>' for r in related)
+        navigation = f'<aside class="delegation-links" aria-label="상하위 조문 연결"><strong>상하위 조문 연결</strong><ul>{connections}</ul></aside>' if connections else ''
+        sections.append(f'<section id="{esc(article.section_id, quote=True)}"><h2>{esc(heading(article.number,article.title))}</h2><pre>{annotated_body(article)}</pre>{navigation}</section>')
     for index, annex in enumerate(law.annexes, len(law.articles)+1):
         add_toc(annex, index)
         body = annotated_body(annex) if annex.body else '별표 본문이 확보되지 않았습니다. 원문 파일 추출이 필요합니다.'
@@ -217,6 +221,12 @@ class LawAPI:
         except httpx.HTTPError:
             # Never expose the URL: query parameters contain OC.
             raise SetupError('법령 API 요청 실패: 네트워크, OC 및 공동활용 API 권한을 확인하세요.') from None
+
+    def delegation(self, mst):
+        """3단비교 원본을 반환합니다. 요청 MST만으로 응답의 개정 버전을 단정하지 않습니다."""
+        if not re.fullmatch(r'\d{1,20}', mst):
+            raise ValueError('법령일련번호(MST)가 올바르지 않습니다.')
+        return self.request('lawService.do', target='thdCmp', MST=mst, knd='2', type='JSON')
 
     def search(self, query, page=1, kind='law', revisions=False, display=30):
         if not revisions:
@@ -284,7 +294,8 @@ class LawAPI:
         return {'total': total, 'page': page, 'laws': [
             {'id': text(n, keys[0]), 'name': text(n, keys[1]),
              'promulgated': text(n, keys[2]), 'effective': text(n, '시행일자'),
-             'status': text(n, '현행연혁코드'), 'kind': kind, 'law_id': text(n,'법령ID')}
+             'status': text(n, '현행연혁코드'), 'kind': kind, 'law_id': text(n,'법령ID'),
+            'amendment': text(n, '제개정구분명')}
             for n in nodes]}
 
     # 선택한 개정 버전을 재현하려면 MST와 시행일(efYd)이 함께 필요합니다.

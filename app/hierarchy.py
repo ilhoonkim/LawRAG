@@ -99,7 +99,40 @@ def revision_order(row):
     return row['effective'], row.get('promulgated', ''), int(row['id'])
 
 
-def build_plan(manager, items):
+def current_revision(manager, node):
+    """현행 검색(nw=3)에서 정확한 법령의 오늘 시행 버전만 선택합니다.
+
+    연혁의 마지막 행은 폐지법일 수도 있습니다. 현행 결과가 없으면 과거 연혁이나
+    이름이 비슷한 후속 법으로 대체하지 않고 호출자에게 확인 필요를 알립니다.
+    """
+    found, seen = {}, set()
+    for page in range(1, 201):
+        result = manager.api.search(node['name'], page, kind='law', revisions=False, display=100)
+        rows, total = result['laws'], int(result['total'])
+        signature = tuple((r['id'],r['effective']) for r in rows)
+        if (not rows and (page-1)*100 < total) or (rows and signature in seen):
+            raise ValueError('현행 법령 검색 페이지가 누락되거나 반복되었습니다.')
+        seen.add(signature)
+        for row in rows:
+            matches = normalize_name(row['name']) == normalize_name(node['name'])
+            if node.get('law_id') and row.get('law_id'):
+                matches = matches and str(node['law_id']).lstrip('0') == str(row['law_id']).lstrip('0')
+            if (matches and manager.collectible_date(row['effective']) and
+                (not row.get('promulgated') or manager.collectible_date(row['promulgated'])) and
+                '폐지' not in row.get('status','') and '폐지' not in row.get('amendment','')):
+                if not re.fullmatch(r'\d{1,20}', row['id']):
+                    raise ValueError('현행 법령의 MST가 올바르지 않습니다.')
+                found[(row['id'],row['effective'])] = {**row, 'kind':'law'}
+        if page*100 >= total:
+            break
+    else:
+        raise ValueError('현행 법령 조회 범위를 초과했습니다.')
+    if not found:
+        raise ValueError(f'{node["name"]}: 현재 시행 중인 정확한 명칭의 법령을 확인하지 못했습니다. 폐지·명칭 변경·API 수록 여부를 확인하세요.')
+    return max(found.values(), key=revision_order)
+
+
+def build_plan(manager, items, *, current_only=False):
     """선택 항목과 공식 트리의 법령들을 합칩니다. 행정규칙은 자동 확장하지 않습니다."""
     today = today_in_korea().strftime('%Y%m%d')
     planned, families, warnings, cache, trees = {}, [], [], {}, {}
@@ -134,12 +167,14 @@ def build_plan(manager, items):
         if len(sources) != 1:
             raise ValueError(f'{item.name}: 체계도에서 선택 법령을 유일하게 확인하지 못했습니다.')
         source = sources[0]
-        source_rows = revisions(source)
+        source_rows = [current_revision(manager, source)] if current_only else revisions(source)
         matches = [r for r in source_rows if r['id'] == item.mst and
                    (not item.effective or r['effective'] == item.effective)]
         if not matches:
             raise ValueError(f'{item.name}: 선택한 시행 버전을 연혁에서 확인하지 못했습니다.')
         selected = max(matches, key=revision_order)
+        if current_only:
+            source.update(mst=selected['id'], effective=selected['effective'], promulgated=selected.get('promulgated',''))
         start = selected['effective']
         stop = next((r['effective'] for r in source_rows if r['effective'] > start), None)
         add(selected, True)
@@ -156,7 +191,13 @@ def build_plan(manager, items):
             direct = (node.get('mst') and manager.collectible_date(node.get('effective')) and
                       manager.collectible_date(node.get('promulgated')) and
                       node['effective'] <= cutoff and node['promulgated'] <= cutoff)
-            if direct:
+            if current_only:
+                try:
+                    companions = [current_revision(manager, node)]
+                except ValueError as exc:
+                    warnings.append(str(exc))
+                    companions = []
+            elif direct:
                 companions = [{'id': node['mst'], 'name': node['name'], 'kind': 'law',
                                'effective': node['effective'], 'promulgated': node['promulgated']}]
             else:
@@ -166,6 +207,8 @@ def build_plan(manager, items):
             if not companions:
                 warnings.append(f'{node["name"]}: 선택한 {item.name} 시행 기간에 적용할 버전이 확인되지 않았습니다.')
             for row in companions:
+                if current_only:
+                    node.update(mst=row['id'], effective=row['effective'], promulgated=row.get('promulgated',''))
                 add(row)
                 family['members'].append({'mst': row['id'], 'effective': row['effective'], 'name': row['name']})
         families.append(family)

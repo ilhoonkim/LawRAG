@@ -179,7 +179,7 @@ class Provider:
     # 관련성 검토와 달리, 확보한 근거 전체로 질문에 답할 수 있는지를 확인합니다.
     # missing_issues는 추가 검색할 법적 쟁점, missing_facts는 사용자에게 확인할 사건 사실입니다.
     def assess_evidence(self, question, evidence, missing_references, as_of):
-        documents = [{"id":i, **{k:e.get(k,'') for k in ('law_name','number','title','body','effective','evidence_role','application_conditions')}}
+        documents = [{"id":i, **{k:e.get(k,'') for k in ('law_name','number','title','body','effective','evidence_role','application_conditions','relation','reference_edges')}}
                      for i,e in enumerate(evidence,1)]
         data = self.post('/chat/completions', {
             'model':self.settings.chat_model,'temperature':0,'response_format':{'type':'json_object'},
@@ -212,20 +212,26 @@ class Provider:
             raise SetupError('근거 충분성 검토 응답을 확인할 수 없습니다. 다시 시도해 주세요.') from None
 
     # 검색용 요약·예상 질문 대신 실제 조문 본문을 답변 근거로 전달합니다.
-    # 화면에 보이는 추천 근거만 [1], [2] 번호를 받으며, 연결 조문은 별도 문맥으로 제공합니다.
+    # 화면의 검색 근거·상하위 조문은 [1], [2] 번호를 받습니다. 나머지 연결 문맥은 번호가 없습니다.
     # 이 순서가 프런트엔드 출처 번호와 일치해야 인용 클릭이 올바른 조문을 가리킵니다.
     def answer(self, question, evidence, history, missing_references=None, assessment=None):
-        recommended = [e for e in evidence if not e.get('relation')]
-        linked = [e for e in evidence if e.get('relation')]
+        recommended = [e for e in evidence if not e.get('relation') or e.get('include_in_sources')]
+        linked = [e for e in evidence if e.get('relation') and not e.get('include_in_sources')]
         context = '추천 근거(숫자 인용 번호 사용):\n' + '\n\n'.join(
             f'[{i}] {e["law_name"]} {e["number"]}({e["title"]}) 시행일: {e.get("effective", "미상")}\n{e["body"]}'
             for i,e in enumerate(recommended,1))
         relations = {'references_article':'조문 참조','references_annex':'별표 참조',
-                     'reverse_reference':'역참조','applies':'준용','definition_context':'정의 문맥'}
+                     'reverse_reference':'역참조','applies':'준용','definition_context':'정의 문맥',
+                     'delegation_context':'상하위 위임조문 비교 문맥'}
+        context += '\n\n상하위 연결 출처의 관계(검색 적합도 검토 결과와 구별):\n' + '\n'.join(
+            f'[{i}] ' + json.dumps(e.get('reference_edges',[]), ensure_ascii=False)
+            for i,e in enumerate(recommended,1) if e.get('include_in_sources'))
         if linked:
             context += '\n\n연결 참조 자료(답변 문맥 전용, 숫자 인용 번호 없음):\n'
             for i,e in enumerate(linked,1):
                 paths = '; '.join(f'{r["from_law"]} {r["from_article"]} → {r["to_law"]} {r["to_article"]}'
+                                  f' (관계: {r.get("relation", e["relation"])}; 출처: {r.get("provenance",{}).get("source","본문")}; '
+                                  f'{r.get("provenance",{}).get("note", "")})'
                                   for r in e.get('reference_edges',[]))
                 context += (f'\n연결 참조 C{i}: {e["law_name"]} {e["number"]}({e["title"]}) 시행일: {e.get("effective","미상")}\n'
                     f'확장 출발점: {e.get("referenced_by_law",e["law_name"])} {e.get("referenced_by","")}\n'
@@ -248,6 +254,7 @@ class Provider:
             '숫자 근거 번호는 추천 근거에 부여된 번호만 사용하세요. 연결 참조 자료도 본문과 연결 관계를 읽고 적용 조건·예외 판단에 사용하세요. '
             '연결 참조만 뒷받침하는 내용은 그 자료의 실제 법령명·조문명으로 출처를 밝히고 추천 근거에 그 내용이 있는 것처럼 인용하지 마세요. '
             '연결 참조에는 숫자 번호를 새로 붙이지 말고 C1 같은 내부 표기도 답변에 출력하지 마세요. 추천 근거가 없으면 숫자 인용 없이 실제 법령명·조문명으로 설명하세요. '
+            'delegation_comparison은 공식 위임조문 비교 묶음이며, 모든 하위 조문 간 직접 위임 관계를 뜻하지 않습니다. hierarchy_citation은 상하위 본문 인용입니다. 비교 관계·인용만으로 법적 위임이나 적용을 단정하지 말고 각 본문의 요건을 확인하세요. '
             '참조자료 일부가 없어도 확보된 본문에 명시된 내용은 답하세요. 참조 미확보만으로 답변 전체를 거절하지 마세요. '
             '다만 빠진 자료 없이는 판단할 수 없는 부분은 추측하지 말고 그 부분만 확인이 필요하다고 구분하세요. '
             '서류 질문은 본문에 명시된 서류와 적용 상황·제출 조건을 묶어 정리하세요. 특정 절차의 서류를 모든 거래의 공통 서류로 일반화하지 마세요. '

@@ -138,15 +138,16 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
         missing += catalog_gaps
         progress('assess')
         assessment = provider.assess_evidence(body.question,evidence,missing,result['as_of'])
-    # Only search hits are recommended in the UI. Keep linked articles in the
-    # LLM context; Provider assigns numeric citations to the visible hits only.
+    # 검색 근거와 표시 대상으로 지정한 상하위 조문은 같은 순서로 숫자 인용을 받습니다.
+    # 일반 참고 문맥은 LLM에만 전달합니다. Provider와 UI의 번호가 이 순서와 일치합니다.
     evidence.sort(key=lambda e:(-e.get('score',0),bool(e.get('relation')),source_key(e)))
-    # 연결 조문도 LLM에는 전달하지만 추천 출처에서는 숨깁니다.
+    # 상하위 연결은 출처에 포함하고 일반 연결 문맥만 숨깁니다.
     # approved_count에는 검토를 통과한 후보에서 확장한 연결 문맥도 포함됩니다.
-    visible_evidence = [e for e in evidence if not e.get('relation')]
+    visible_evidence = [e for e in evidence if not e.get('relation') or e.get('include_in_sources')]
     result.update(evidence=visible_evidence,missing_references=missing,rewritten_query=rewritten,
         original_question=body.question,candidate_count=len(candidates),approved_count=len(evidence),
         linked_context_count=len(evidence)-len(visible_evidence),
+        hierarchy_source_count=sum(bool(e.get('include_in_sources')) for e in visible_evidence),
         assessment=assessment,initial_assessment=initial_assessment,additional_search_rounds=rounds,
         additional_queries=extra_queries if rounds else [],fusion=body.fusion or settings.search_fusion)
     if not evidence:

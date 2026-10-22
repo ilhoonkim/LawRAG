@@ -61,6 +61,7 @@ def backfill(manager, *, law_name=None, list_only=False, notify=print):
               'collected': 0, 'failed': 0, 'interrupted': False, 'ok': False}
     path = manager.store.directory / 'hierarchy-backfill-report.json'
     attempted, active_batch, report_warning = set(), None, False
+    delegation_attempted = set()
 
     def save():
         nonlocal report_warning
@@ -103,7 +104,7 @@ def backfill(manager, *, law_name=None, list_only=False, notify=print):
                         event = dict(db.execute('SELECT * FROM collection_history WHERE id=?', (event_id,)).fetchone())
                     attempted.add((event['kind'], event['mst'], event['effective']))
                     notify(f'  수집·임베딩: {event["name"]} / 시행 {event["effective"]}')
-                    manager.run([event_id])
+                    manager.run([event_id], delegation_attempted=delegation_attempted)
                     with manager.store.connect() as db:
                         event = dict(db.execute('SELECT * FROM collection_history WHERE id=?', (event_id,)).fetchone())
                     if event['status'] == 'completed':
@@ -121,6 +122,12 @@ def backfill(manager, *, law_name=None, list_only=False, notify=print):
                         'SELECT 1 FROM law_versions WHERE kind=? AND mst=? AND effective=?',
                         (item['kind'], item['mst'], item['effective'])).fetchone()]
                 entry.update(status='incomplete' if missing or plan['warnings'] else 'completed', missing=missing)
+                # 이번에 새 본문이 없더라도 기존 가족의 관계를 보완합니다. 본문 저장 결과와
+                # 위임관계 매핑 결과는 별도 보고해 관계 실패 때문에 재임베딩하지 않습니다.
+                manager.run([], plan_id=plan['plan_id'], delegation_attempted=delegation_attempted)
+                from .delegation import status as delegation_status
+                entry['delegation'] = delegation_status(manager.store, row['version'])
+                notify('  위임관계: '+entry['delegation']['status']+' '+entry['delegation'].get('reason',''))
             except (SetupError, ValueError) as exc:
                 entry.update(status='failed')
                 reason = str(exc)[:400]
@@ -136,6 +143,7 @@ def backfill(manager, *, law_name=None, list_only=False, notify=print):
             finally:
                 save()
         report['ok'] = all(e['status'] in ('completed', 'planned') and not e['errors'] and not e['warnings']
+                           and e.get('delegation',{}).get('status','completed') in ('completed','unavailable')
                            for e in report['items'])
     except KeyboardInterrupt:
         report['interrupted'] = True

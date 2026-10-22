@@ -21,7 +21,7 @@ function remarkCitations({ evidence }) {
           if (match.index > end) parts.push({ type: 'text', value: child.value.slice(end, match.index) });
           // Historical answers may have cited linked-only context. Hide those
           // markers without renumbering other citations in the saved answer.
-          if (!source.relation) parts.push({ type: 'link', url: `#evidence-${number}`,
+          if (!source.relation || source.include_in_sources) parts.push({ type: 'link', url: `#evidence-${number}`,
             data: { hProperties: { 'data-citation': number } },
             children: [{ type: 'text', value: match[0] }] });
           end = match.index + match[0].length;

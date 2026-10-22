@@ -113,6 +113,11 @@ def expand(store, evidence, *, cutoff, question='', limit=40):
                 'parent_context':parent['body'],'reference_edges':[edge], 'reference_titles':[]}
         else:
             additions[k]['reference_edges'].append(edge)
+        if node['law_name'] != parent['law_name'] and (
+            any(node['law_name'] == declared.get(parent['version'],{}).get(short) or
+                parent['law_name'] == declared.get(node['version'],{}).get(short)
+                for short in ('법','영','시행령','규칙','시행규칙'))):
+            additions[k].update(include_in_sources=True, source_type='hierarchy_connection')
     # 검색 근거에서 한 단계만 확장합니다. 새로 붙인 조문을 다시 순회하지 않아
     # 참조가 연쇄적으로 늘어나 전체 법령을 프롬프트에 넣는 일을 피합니다.
     for article in expanded:
@@ -145,6 +150,18 @@ def expand(store, evidence, *, cutoff, question='', limit=40):
             if node['version']==article['version'] and re.fullmatch(r'용어의\s*정의|정의',node['title'].strip()):
                 if grams(node['body']) & grams(question + article['body']):
                     attach(node,article,'definition_context',node['body'][:180])
+    # 비교 API로 확인된 상하위 관계는 최대 두 단계까지 확장합니다. 기존 본문 참조와
+    # 중복되면 조문은 한 번만 담되 API 출처와 경로는 모두 보존합니다.
+    from .delegation import expand as expand_delegation
+    delegated, delegation_missing = expand_delegation(store, expanded, cutoff, limit=limit)
+    missing.extend(delegation_missing)
+    for node in delegated:
+        k = key(node)
+        if k in additions:
+            additions[k]['reference_edges'].extend(e for e in node['reference_edges'] if e not in additions[k]['reference_edges'])
+            additions[k].update(include_in_sources=True, source_type='hierarchy_connection')
+        elif k not in seen:
+            additions[k] = node
     # 질문과 겹치는 문맥을 먼저 담고 확장 개수를 제한합니다.
     # 이후 chat_pipeline.budgeted()에서 전체 답변 입력의 본문 길이도 제한합니다.
     ordered = sorted(additions.values(),key=lambda n:(-len(grams(question)&grams(n['body'])), -n['score'],key(n)))

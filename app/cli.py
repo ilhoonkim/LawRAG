@@ -27,7 +27,9 @@ def main():
         elif args.command == 'ingest':
             if not args.mst.isdigit():
                 parser.error('MST는 숫자여야 합니다.')
-            result = store.ingest(api.fetch(args.mst), provider, args.keyword_only)
+            result = store.ingest(api.fetch(args.mst), provider, args.keyword_only, mst=args.mst)
+            from .delegation import refresh
+            result['delegation'] = refresh(store, api, result['version'])
         else:
             cutoff, clarification = resolve_date(args.question)
             if clarification:

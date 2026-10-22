@@ -24,3 +24,6 @@ h1{margin:0 0 4px;font-size:18px;font-weight:600;color:#303743}
 .source-note p{max-width:850px}
 @media(max-width:700px){.document-layout{grid-template-columns:160px minmax(0,1fr)}.law-content{padding:12px 10px}.document-header{padding:10px}h1{font-size:16px}.law-content section{padding:10px}.toc{padding:8px 5px}}
 @media(max-width:460px){.document-layout{grid-template-columns:115px minmax(0,1fr)}.toc a{padding:5px;font-size:10px}.document-meta a{display:block;margin:2px 0}.law-content{padding:8px 4px}.law-content pre{font-size:12px}}
+.delegation-links { margin-top: 1rem; padding: .85rem 1rem; border: 1px solid #d8e3ef; border-radius: .5rem; background: #f4f8fc; font-size: .9rem; }
+.delegation-links ul { margin: .4rem 0 0; padding-left: 1.3rem; }
+.delegation-links li { margin: .3rem 0; }

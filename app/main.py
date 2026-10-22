@@ -90,7 +90,9 @@ def create_app(settings=None, provider=None, law_api=None):
         raw = law_api.fetch(body.mst)
         if not manager.collectible_date(parse_law(raw).effective):
             raise ValueError('오늘 이후 시행 예정이거나 시행일이 잘못된 본문은 저장하지 않았습니다.')
-        return store.ingest(raw, provider, body.keyword_only, mst=body.mst)
+        result = store.ingest(raw, provider, body.keyword_only, mst=body.mst)
+        from .delegation import refresh
+        return {**result, 'delegation': refresh(store, law_api, result['version'])}
 
     @app.get('/api/models')
     def models():
@@ -212,7 +214,9 @@ def create_app(settings=None, provider=None, law_api=None):
                 if cutoff and cutoff < store._date(law.effective):
                     raise HTTPException(400, '문서 시행일 이전으로 참조 기준일을 지정할 수 없습니다.')
                 if cutoff:
-                    page = render_html(law, reference_resolver=reference_resolver(store, law, cutoff), reference_date=cutoff)
+                    from .delegation import html_links
+                    page = render_html(law, reference_resolver=reference_resolver(store, law, cutoff), reference_date=cutoff,
+                                       delegation_links=html_links(store, law.version, cutoff))
                     return HTMLResponse(page, headers={'Cache-Control': 'no-store'})
         return FileResponse(path, media_type='text/html')
 

@@ -47,6 +47,11 @@ class HierarchyAPI:
     def hierarchy(self, mst):
         return self.tree
 
+    def delegation(self, mst):
+        # 이 fixture는 체계도 테스트용으로, 비교 자료가 없다는 정상 응답을 명시합니다.
+        # 실제 위임 응답·조문 매핑은 test_delegation의 별도 합성 fixture에서 검사합니다.
+        return json.dumps({'LspttnThdCmpLawXService': {'기본정보': {'삼단비교존재여부': 'N'}}}).encode()
+
     def search(self, query, page=1, kind='law', revisions=False, display=100):
         self.searched.append(query)
         rows = [r for r in self.rows if r['name'] == query]

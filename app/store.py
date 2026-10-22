@@ -78,6 +78,20 @@ class Store:
                 version TEXT PRIMARY KEY, law_id TEXT, name TEXT, kind TEXT, mst TEXT,
                 promulgated TEXT, effective TEXT, collected_at TEXT, html TEXT, source_url TEXT);
               CREATE INDEX IF NOT EXISTS versions_source ON law_versions(kind, mst);
+              CREATE TABLE IF NOT EXISTS delegation_snapshots (
+                mst TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '', fetched_at TEXT,
+                status TEXT, reason TEXT NOT NULL DEFAULT '');
+              CREATE TABLE IF NOT EXISTS delegation_sources (
+                version TEXT PRIMARY KEY, mst TEXT NOT NULL);
+              CREATE TABLE IF NOT EXISTS delegation_edges (
+                snapshot_mst TEXT, from_version TEXT, from_article TEXT,
+                to_version TEXT, to_article TEXT, relation TEXT, provenance TEXT,
+                PRIMARY KEY(snapshot_mst,from_version,from_article,to_version,to_article,relation));
+              CREATE INDEX IF NOT EXISTS delegation_from ON delegation_edges(from_version,from_article);
+              CREATE INDEX IF NOT EXISTS delegation_to ON delegation_edges(to_version,to_article);
+              CREATE TABLE IF NOT EXISTS delegation_unresolved (
+                snapshot_mst TEXT, position INTEGER, payload TEXT, reason TEXT,
+                PRIMARY KEY(snapshot_mst,position));
               CREATE TABLE IF NOT EXISTS version_articles (
                 version TEXT REFERENCES law_versions(version), position INTEGER, number TEXT, title TEXT,
                 body TEXT, section_id TEXT, chapter TEXT, vector BLOB, model TEXT,

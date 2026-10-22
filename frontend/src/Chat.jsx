@@ -18,7 +18,7 @@ const stageLabels = {
 function groupedSources(evidence = []) {
   const groups = new Map();
   evidence.forEach((item, i) => {
-    if (item.relation) return;
+    if (item.relation && !item.include_in_sources) return;
     if (!groups.has(item.law_name)) groups.set(item.law_name, { name: item.law_name, items: [], score: 0 });
     const group = groups.get(item.law_name);
     group.items.push({ ...item, citation: i + 1 });
@@ -117,7 +117,7 @@ export default function Chat({ visible, status, onSource }) {
             const group = groupedSources(m.evidence).find(g => g.items.some(item => item.citation === number));
             if (group) openSources(group, i, trigger, number);
           }} /> : <div className="answer-text">{m.content}</div>}
-          {m.evidence?.some(item => !item.relation) && <div className="evidence-chips">{groupedSources(m.evidence).map(group => <button key={group.name} aria-label={`${group.name} 근거 ${group.items.length}개 보기`} aria-expanded={sourceGroup?.messageIndex === i && sourceGroup?.name === group.name} onClick={event => openSources(group, i, event.currentTarget)}><JusticeIcon />{group.name} <span>{group.items.length}</span></button>)}</div>}
+          {m.evidence?.some(item => !item.relation || item.include_in_sources) && <div className="evidence-chips">{groupedSources(m.evidence).map(group => <button key={group.name} aria-label={`${group.name} 근거 ${group.items.length}개 보기`} aria-expanded={sourceGroup?.messageIndex === i && sourceGroup?.name === group.name} onClick={event => openSources(group, i, event.currentTarget)}><JusticeIcon />{group.name} <span>{group.items.length}</span></button>)}</div>}
           {m.role === 'assistant' && <button className="copy-button" onClick={() => copy(m.content,i)}>{copied === i ? '복사됨' : copied === 'error' ? '복사 권한을 확인하세요' : '답변 복사'}</button>}
         </article>)}
         {busy && <div className="message pipeline-progress" role="status" aria-label="답변 처리 단계" aria-atomic="true">
@@ -141,9 +141,10 @@ export default function Chat({ visible, status, onSource }) {
     </main>
     {sourceGroup && <aside className="sources" aria-label="지식 출처" ref={sourcesRef}>
       <h2>지식 출처 <button aria-label="지식 출처 닫기" onClick={closeSources}>✕</button></h2>
-      <strong className="source-law-name">{sourceGroup.name}</strong><p className="muted">관련 조문 {evidence.length}개 · 관련도 높은 순</p>
+      <strong className="source-law-name">{sourceGroup.name}</strong><p className="muted">관련 조문 {evidence.length}개 · {evidence.some(item => item.include_in_sources) ? '검색 근거·상하위 연결 포함' : '관련도 높은 순'}</p>
       {evidence.map((item,i) => <button key={`${item.version}-${item.number}-${i}`} className="source-card" aria-current={sourceGroup.citation === item.citation ? 'true' : undefined} onClick={() => onSource(item)}><strong><JusticeIcon />[{item.citation}] {item.number}{item.title ? `(${item.title})` : ''}</strong>
-        <p className="source-relevance">관련도 점수: <b>{((item.score || 0)*100).toFixed(1)}%</b></p>
+        <p className="source-relevance">{item.include_in_sources ? <b>상하위 연결 근거</b> : <>관련도 점수: <b>{((item.score || 0)*100).toFixed(1)}%</b></>}</p>
+        {item.include_in_sources && <p>{item.referenced_by_law} {item.referenced_by}에서 연결 · 별도 검색 점수 없음</p>}
         <p className="source-effective">시행일: {dateText(item.effective).replaceAll('-', '.')}</p>
         <p>{item.evidence_role === 'supporting' ? '보조 근거' : '직접 근거'}{item.matched_units?.length ? ` · 검색 위치: ${item.matched_units.map(u => u.location).join(', ')}` : ''}</p><span className="source-open">원문 보기 ↗</span></button>)}
       <p className="score-note">관련도는 검색 점수이며 법적 정확도의 확률이 아닙니다.</p>
