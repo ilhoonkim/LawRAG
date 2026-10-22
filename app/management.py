@@ -327,12 +327,6 @@ class Management:
             total = db.execute('SELECT count(*) FROM version_articles WHERE version=?', (version,)).fetchone()[0]
             rows = [dict(r) for r in db.execute('''SELECT number,title,body,section_id,chapter,position FROM version_articles
                 WHERE version=? ORDER BY position LIMIT 10 OFFSET ?''', (version, (page-1)*10))]
-            for row in rows:
-                metadata = db.execute('''SELECT b.status,b.error,m.summary,m.questions,m.generator_model,m.created_at
-                    FROM article_metadata b LEFT JOIN search_metadata m ON m.key=b.metadata_key
-                    WHERE b.version=? AND b.position=?''', (version,row['position'])).fetchone()
-                row['search_metadata'] = ({**dict(metadata),'questions':json.loads(metadata['questions'] or '[]'),
-                    'generated':bool(metadata['summary'])} if metadata else None)
         for row in rows:
             row['html_url'] = '/documents/' + law['html'] + '#' + quote(row['section_id'], safe='')
         metadata = dict(law)

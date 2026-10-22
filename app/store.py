@@ -57,7 +57,7 @@ class Store:
         self.db = directory / 'laws.sqlite3'
         # law_versions/version_articles는 모든 수집 버전, laws/articles는 활성 버전용 테이블입니다.
         # revision_catalog는 API에서 조회한 연혁일 뿐 본문 수집 완료를 뜻하지 않습니다.
-        # 생성 메타데이터·그 벡터·조문 연결은 별도 테이블로 분리해 재시도 시 재사용합니다.
+        # 검색 벡터는 조문 제목·본문만 저장하고, 참조·위임 관계는 별도 테이블로 관리합니다.
         with self.connect() as db:
             db.executescript('''
               CREATE TABLE IF NOT EXISTS laws (id TEXT PRIMARY KEY, name TEXT, effective TEXT, version TEXT, html TEXT, source_url TEXT);
@@ -96,17 +96,6 @@ class Store:
                 version TEXT REFERENCES law_versions(version), position INTEGER, number TEXT, title TEXT,
                 body TEXT, section_id TEXT, chapter TEXT, vector BLOB, model TEXT,
                 PRIMARY KEY(version, position));
-              CREATE TABLE IF NOT EXISTS search_metadata (
-                key TEXT PRIMARY KEY, source_hash TEXT, generator_model TEXT, prompt_version TEXT,
-                summary TEXT, questions TEXT, created_at TEXT);
-              CREATE TABLE IF NOT EXISTS search_metadata_vectors (
-                metadata_key TEXT REFERENCES search_metadata(key), field TEXT, ordinal INTEGER,
-                text TEXT, vector BLOB, model TEXT,
-                PRIMARY KEY(metadata_key,field,ordinal,model));
-              CREATE TABLE IF NOT EXISTS article_metadata (
-                version TEXT, position INTEGER, metadata_key TEXT REFERENCES search_metadata(key),
-                status TEXT, error TEXT, updated_at TEXT, PRIMARY KEY(version,position),
-                FOREIGN KEY(version,position) REFERENCES version_articles(version,position) ON DELETE CASCADE);
               INSERT OR IGNORE INTO law_versions
                 SELECT version, id, name, 'law', '', '', effective, '', html, source_url FROM laws;
               INSERT OR IGNORE INTO version_articles(version,position,number,title,body,section_id,chapter,vector,model)
@@ -164,13 +153,7 @@ class Store:
             raise SetupError('임베딩 모델이 기존 DB와 다릅니다. 별도 DATA_DIR로 전체 법령을 재색인하세요.')
         texts = [body_text({'body': a.body}) for a in law.articles]
         titles = [f'{law.name} - {a.number}({a.title})' for a in law.articles]
-        # 요약·예상 질문 생성 캐시는 별도로 먼저 저장합니다. 이후 임베딩이 실패해도
-        # 재실행 시 이미 성공한 생성 결과를 다시 과금하며 만들 필요가 없게 합니다.
-        metadata_keys = []
-        if not keyword_only and callable(getattr(provider, 'generate_search_metadata', None)):
-            from .search_metadata import prepare
-            documents = [{'law_name':law.name, 'number':a.number, 'title':a.title, 'body':a.body} for a in law.articles]
-            metadata_keys = prepare(self,provider,documents)
+        # 수집 단계에서는 원문 제목·본문만 임베딩합니다. 채팅용 LLM은 호출하지 않습니다.
         embeddings = [None] * (2*len(texts)) if keyword_only else provider.embed(texts + titles)
         if len(embeddings) != 2*len(texts):
             raise ValueError('임베딩 개수가 조문 제목·본문 입력 개수와 다릅니다.')
@@ -185,7 +168,7 @@ class Store:
         packed = [(i, a, sqlite_vec.serialize_float32(v) if v is not None else None,
                    provider.fingerprint if v is not None else None)
                   for i, (a, v) in enumerate(zip(law.articles, vectors))]
-        # 한 버전의 조문·벡터·메타데이터 연결은 같은 DB 트랜잭션으로 갱신합니다.
+        # 한 버전의 조문·벡터·참조 관계는 같은 DB 트랜잭션으로 갱신합니다.
         # 위에서 보관한 파일은 DB 트랜잭션에 포함되지 않으며 실패 시 진단용으로 남을 수 있습니다.
         with self.connect() as db:
             db.execute('DELETE FROM version_articles WHERE version=?', (law.version,))
@@ -197,10 +180,6 @@ class Store:
                 for i, a, v, model in packed])
             db.executemany('UPDATE version_articles SET title_vector=? WHERE version=? AND position=?',
                 [(sqlite_vec.serialize_float32(v) if v is not None else None, law.version, i) for i,v in enumerate(title_vectors)])
-            if metadata_keys:
-                from .search_metadata import bind
-                for i,key in enumerate(metadata_keys):
-                    bind(db,law.version,i,key)
             db.execute('DELETE FROM annex_nodes WHERE version=?', (law.version,))
             db.execute('DELETE FROM article_references WHERE version=?', (law.version,))
             db.executemany('INSERT INTO annex_nodes VALUES(?,?,?,?,?,?)',
@@ -216,7 +195,6 @@ class Store:
             if not archive_only or active:
                 self._activate(db, law.version)
         return {'name': law.name, 'articles': len(law.articles), 'version': law.version,
-                'metadata_articles': len(metadata_keys),
                 'mode': 'keyword' if keyword_only else 'hybrid', 'html_url': '/documents/' + filename}
 
     def _activate(self, db, version):
@@ -286,9 +264,7 @@ class Store:
         with self.connect() as db:
             for law in selected:
                 count = db.execute('SELECT count(*),count(vector) FROM version_articles WHERE version=?', (law['version'],)).fetchone()
-                metadata_count = db.execute("SELECT count(*) FROM article_metadata WHERE version=? AND status='completed'", (law['version'],)).fetchone()[0]
-                result.append({**law, 'id': law['law_id'], 'article_count': count[0], 'embedded_count': count[1],
-                               'metadata_count':metadata_count})
+                result.append({**law, 'id': law['law_id'], 'article_count': count[0], 'embedded_count': count[1]})
         return sorted(result, key=lambda r: r['name'])
 
     def expand_references(self, evidence):
@@ -336,7 +312,7 @@ class Store:
         return expand(self, evidence, **kwargs)
 
     # 기존 검색 경로: 제목/본문 최소값과 가중합을 사용합니다.
-    # 채팅의 메타데이터 검색·필드별 RRF를 수정하려면 retrieval.py를 확인하세요.
+    # 채팅의 제목·본문 검색·필드별 RRF를 수정하려면 retrieval.py를 확인하세요.
     def search(self, question, provider, threshold=.48, limit=5, mode='hybrid', as_of=None, title_weight=.35, min_title=.15, min_body=.20, query_variants=None):
         if not 0 <= threshold <= 1:
             raise ValueError('임계치는 0~1이어야 합니다.')

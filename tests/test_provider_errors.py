@@ -8,6 +8,10 @@ from app.provider import Provider
 
 REAL_CLIENT = httpx.Client
 
+@pytest.fixture(autouse=True)
+def no_retry_wait(monkeypatch):
+    monkeypatch.setattr('app.http_retry.time.sleep',lambda _:None)
+
 def mock_response(monkeypatch, handler):
     monkeypatch.setattr('app.provider.httpx.Client',
         lambda **kwargs: REAL_CLIENT(transport=httpx.MockTransport(handler), **kwargs))

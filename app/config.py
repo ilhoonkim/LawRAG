@@ -27,8 +27,6 @@ class Settings:
     api_key: str = os.getenv('LLM_API_KEY', '') or os.getenv('OPENAI_API_KEY', '')
     base_url: str = os.getenv('LLM_BASE_URL', 'https://api.openai.com/v1')
     embedding_model: str = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-large')
-    # 검색용 요약·예상 질문을 생성하는 모델은 채팅 모델 및 임베딩 모델과 별개입니다.
-    metadata_model: str = os.getenv('METADATA_MODEL', 'gpt-4o-mini')
     chat_model: str = os.getenv('CHAT_MODEL', 'gpt-4.1')
     rerank_model: str = os.getenv('RERANK_MODEL', '')
     # 채팅의 실제 검토 상한은 chat_pipeline.review_limit()에서 최대 15개로 제한합니다.

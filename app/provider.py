@@ -4,22 +4,19 @@ import re
 from dataclasses import replace
 import httpx
 from .laws import SetupError
+from .http_retry import error_info, request_with_retry, RequestFailure
 
 
 # 외부 AI 서비스와 통신하는 공통 계층입니다. 호출 실패는 안전한 범주로 변환해
 # UI와 수집 이력에 전달하며, 인증 헤더·응답 원문·키가 포함된 URL은 노출하지 않습니다.
 def api_failure(response):
     """Report useful failure categories without echoing upstream secrets/URLs."""
-    try:
-        payload = response.json()
-        error = payload.get('error', {}) if isinstance(payload, dict) else {}
-        error = error if isinstance(error, dict) else {}
-    except ValueError:
-        error = {}
+    error = error_info(response)
     code = error.get('code') or error.get('type')
     known_codes = {'invalid_api_key','insufficient_quota','billing_hard_limit_reached',
                    'rate_limit_exceeded','model_not_found','context_length_exceeded',
-                   'invalid_request_error','permission_denied','access_denied'}
+                   'invalid_request_error','permission_denied','access_denied',
+                   'invalid_json_schema','unsupported_parameter','unsupported_value'}
     suffix = f' / {code}' if isinstance(code,str) and code in known_codes else ''
     status = response.status_code
     if code in ('insufficient_quota','billing_hard_limit_reached'):
@@ -36,12 +33,24 @@ def api_failure(response):
         status == 400 and any(t in str(error.get('message','')).lower()
                              for t in ('maximum context length','too many tokens','max tokens','maximum number of tokens'))):
         detail = '요청 입력이 모델의 토큰 한도를 초과했습니다.'
+    elif code == 'invalid_json_schema':
+        detail = '모델 또는 API가 요청한 JSON 응답 스키마를 지원하지 않습니다. 응답 형식 설정을 확인하세요.'
     elif status in (400, 422):
         detail = '요청 입력 또는 모델 설정이 거부되었습니다. 선택한 모델과 입력 형식을 확인해야 합니다.'
     elif status >= 500:
         detail = 'AI 서비스에서 서버 오류가 발생했습니다. 잠시 후 다시 시도하세요.'
     else:
         detail = 'AI 서비스가 요청을 거부했습니다. API 주소와 서비스 상태를 확인하세요.'
+    # 제공자가 param을 주면 알려진 설정명만 표시합니다. 응답 message는 키나 원문을
+    # 포함할 수 있으므로 그대로 노출하지 않습니다.
+    param = error.get('param')
+    if isinstance(param,str) and param.split('.')[0] in {
+        'model','input','messages','response_format','temperature','max_tokens','max_completion_tokens',
+        'reasoning_effort','dimensions','encoding_format'} and re.fullmatch(r'[a-z_]+(?:\.[a-z_]+)*',param):
+        detail += f' 거부된 항목: {param}.'
+    attempts = response.extensions.get('request_attempts',1)
+    if attempts > 1:
+        detail += f' 총 {attempts}회 시도 후 실패했습니다.'
     return SetupError(f'AI API 요청 실패 [HTTP {status}{suffix}]: {detail}')
 
 
@@ -50,7 +59,7 @@ class Provider:
         self.settings = settings
 
     # 사용자가 고른 모델은 이번 대화의 답변과 관련성 검토에 함께 적용됩니다.
-    # 임베딩·메타데이터 생성 모델은 변경하지 않습니다.
+    # 임베딩 모델은 변경하지 않습니다.
     def for_model(self, model):
         # Per-request instance: concurrent chats never mutate the collector/model.
         return Provider(replace(self.settings, chat_model=model, rerank_model=model))
@@ -81,16 +90,22 @@ class Provider:
             body = {k:v for k,v in body.items() if k != 'temperature'}
         if not self.settings.api_key:
             raise SetupError('.env의 LLM_API_KEY를 입력하세요. 임베딩 및 답변 생성에 사용됩니다.')
+        schema = body.get('response_format',{}).get('json_schema',{}).get('name','')
+        stage = '임베딩' if path == '/embeddings' else {
+            'evidence_review':'근거 관련성 검토'}.get(schema,'채팅')
+        model = body.get('model','')
+        model_label = model if isinstance(model,str) and re.fullmatch(r'(?:gpt-|text-embedding-|o[1-9])[a-zA-Z0-9._-]{0,70}',model) else '설정된 모델'
+        context = f' [단계: {stage}, 모델: {model_label}]'
         try:
             with httpx.Client(timeout=120) as client:
-                response = client.post(self.settings.base_url.rstrip('/') + path,
-                    headers={'Authorization': f'Bearer {self.settings.api_key}'}, json=body)
-        except httpx.TimeoutException:
-            raise SetupError('AI API 요청 실패 [시간 초과]: AI 서버 응답을 기다리다 연결이 종료되었습니다.') from None
+                response = request_with_retry(lambda: client.post(self.settings.base_url.rstrip('/') + path,
+                    headers={'Authorization': f'Bearer {self.settings.api_key}'}, json=body), service='AI '+stage)
+        except RequestFailure as exc:
+            raise SetupError(f'AI API 요청 실패 [{exc.reason}]: 총 {exc.attempts}회 시도 후 실패했습니다.'+context) from None
         except httpx.HTTPError:
-            raise SetupError('AI API 요청 실패 [연결 오류]: API 주소, 인터넷·프록시·인증서 설정을 확인하세요.') from None
+            raise SetupError('AI API 요청 실패 [연결 오류]: API 주소, 인터넷·프록시·인증서 설정을 확인하세요.'+context) from None
         if not response.is_success:
-            raise api_failure(response)
+            raise SetupError(str(api_failure(response))+context)
         try:
             return response.json()
         except ValueError:
@@ -172,10 +187,6 @@ class Provider:
         from .evidence_review import filter_evidence
         return filter_evidence(self,question,candidates)
 
-    def generate_search_metadata(self, documents):
-        from .search_metadata import generate
-        return generate(self, documents)
-
     # 관련성 검토와 달리, 확보한 근거 전체로 질문에 답할 수 있는지를 확인합니다.
     # missing_issues는 추가 검색할 법적 쟁점, missing_facts는 사용자에게 확인할 사건 사실입니다.
     def assess_evidence(self, question, evidence, missing_references, as_of):
@@ -211,7 +222,7 @@ class Provider:
         except (ValueError,KeyError,IndexError,TypeError):
             raise SetupError('근거 충분성 검토 응답을 확인할 수 없습니다. 다시 시도해 주세요.') from None
 
-    # 검색용 요약·예상 질문 대신 실제 조문 본문을 답변 근거로 전달합니다.
+    # 검토를 통과한 실제 조문 본문을 답변 근거로 전달합니다.
     # 화면의 검색 근거·상하위 조문은 [1], [2] 번호를 받습니다. 나머지 연결 문맥은 번호가 없습니다.
     # 이 순서가 프런트엔드 출처 번호와 일치해야 인용 클릭이 올바른 조문을 가리킵니다.
     def answer(self, question, evidence, history, missing_references=None, assessment=None):

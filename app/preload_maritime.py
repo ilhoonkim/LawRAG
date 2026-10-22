@@ -78,7 +78,7 @@ def preload(manager, names=LAWS, *, list_only=False, notify=print):
                     with manager.store.connect() as db:
                         event = dict(db.execute('SELECT * FROM collection_history WHERE id=?', (event_id,)).fetchone())
                     attempted.add((event['kind'],event['mst'],event['effective']))
-                    notify(f'  수집·메타데이터·임베딩: {event["name"]}')
+                    notify(f'  수집·제목/본문 임베딩: {event["name"]}')
                     manager.run([event_id], with_relations=False)
                     with manager.store.connect() as db:
                         event = dict(db.execute('SELECT * FROM collection_history WHERE id=?', (event_id,)).fetchone())

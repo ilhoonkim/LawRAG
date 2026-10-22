@@ -121,7 +121,7 @@ def main(argv=None):
         print(f'HTML 재생성 실패: {exc}')
         return 1
     print(f'전체 {report["total"]}개 버전 · HTML 완료 {report["completed"]} · 실패 {report["failed"]}')
-    print('법령 본문·임베딩·메타데이터·수집 이력 DB는 변경하지 않았습니다.')
+    print('법령 본문·임베딩·참조 관계·수집 이력 DB는 변경하지 않았습니다.')
     return 1 if report['failed'] else 0
 
 

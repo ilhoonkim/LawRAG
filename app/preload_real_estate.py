@@ -59,7 +59,6 @@ def discover_versions(manager, item):
 
 
 # 이 CLI의 완료 판정은 제목·본문 벡터와 현재 임베딩 모델을 기준으로 합니다.
-# 검색 메타데이터의 별도 보강 상태는 enrich_metadata CLI에서 확인합니다.
 def indexed(manager, row):
     with manager.store.connect() as db:
         stored = db.execute('SELECT version FROM law_versions WHERE kind=? AND mst=? AND effective=?', (row['kind'],row['id'],row['effective'])).fetchone()

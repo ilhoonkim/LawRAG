@@ -10,7 +10,7 @@ from .provider import Provider
 from .store import Store, body_text
 
 # 제목·본문 임베딩을 교체하는 유지보수 CLI: python -m app.upgrade_models
-# 서버를 종료하고 실행합니다. 요약·질문 벡터 보강은 app.enrich_metadata의 별도 작업입니다.
+# 서버를 종료하고 실행합니다. 조문 제목·본문 벡터를 현재 임베딩 모델로 갱신합니다.
 TARGET = 'text-embedding-3-large'
 
 

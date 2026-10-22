@@ -231,10 +231,18 @@ class LawAPI:
         if not self.oc:
             raise SetupError('.env의 LAW_API_OC에 국가법령정보 공동활용 OC를 입력하세요.')
         try:
+            from .http_retry import request_with_retry, RequestFailure
             with httpx.Client(timeout=60) as client:
-                response = client.get(f'https://www.law.go.kr/DRF/{endpoint}', params={'OC': self.oc, 'target': 'law', 'type': 'XML', **params})
+                response = request_with_retry(lambda: client.get(f'https://www.law.go.kr/DRF/{endpoint}',
+                    params={'OC': self.oc, 'target': 'law', 'type': 'XML', **params}), service='법령 API')
                 response.raise_for_status()
                 return response.content
+        except RequestFailure as exc:
+            raise SetupError(f'법령 API 요청 실패 [{exc.reason}]: 총 {exc.attempts}회 시도 후 실패했습니다.') from None
+        except httpx.HTTPStatusError as exc:
+            attempts = exc.response.extensions.get('request_attempts',1)
+            raise SetupError(f'법령 API 요청 실패 [HTTP {exc.response.status_code}]: 총 {attempts}회 시도. '
+                             'OC 및 공동활용 API 권한·서비스 상태를 확인하세요.') from None
         except httpx.HTTPError:
             # Never expose the URL: query parameters contain OC.
             raise SetupError('법령 API 요청 실패: 네트워크, OC 및 공동활용 API 권한을 확인하세요.') from None
