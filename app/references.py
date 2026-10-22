@@ -52,19 +52,21 @@ def parse_annexes(root, law_name):
 # 완전한 법률 문법 분석기가 아니므로 불명확한 관계를 확정 사실로 다루면 안 됩니다.
 def reference_target(body, position, own_law):
     prefix = re.split(r'[.\n。]', body[:position])[-1]
-    if re.search(r'이\s*법\s*$', prefix):
+    if re.search(r'이\s*(?:법|영|규칙)\s*$', prefix):
         return own_law
-    quoted = re.findall(r'「([^」]+)」', prefix)
-    if quoted:
-        return quoted[-1]
     if re.search(r'같은\s*법\s*$', prefix):
         return '같은 법(대상 확인 필요)'
-    unquoted = re.search(r'([가-힣]+(?:법|시행령|시행규칙))\s*(?:제\d+조(?:의\d+)?\s*)?$', prefix)
-    if unquoted:
-        return unquoted[1]
+    # 바로 앞의 '법/영'은 앞쪽에 등장한 다른 「법령명」보다 우선합니다.
+    # 선언된 약칭과 실제 상위법 매핑은 HTML/문맥 확장 단계에서 수행합니다.
     generic = re.search(r'(?:^|\s)(법|시행령|시행규칙|영|규칙)\s*$', prefix)
     if generic:
         return generic[1] + '(대상 확인 필요)'
+    quoted = re.findall(r'「([^」]+)」', prefix)
+    if quoted:
+        return quoted[-1]
+    unquoted = re.search(r'([가-힣]+(?:법|시행령|시행규칙))\s*(?:제\d+조(?:의\d+)?\s*)?$', prefix)
+    if unquoted:
+        return unquoted[1]
     return own_law
 
 

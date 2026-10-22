@@ -12,14 +12,18 @@ export default function CollectionDialog({ initialQuery, initialKind, onClose, o
   const [loading,setLoading] = useState(false);
   const [submitting,setSubmitting] = useState(false);
   const [message,setMessage] = useState('');
+  const [plan,setPlan] = useState(null);
   const generation = useRef(0);
   const allRef = useRef(null);
-  const eligible = versions.items.filter(selectable);
+  // 이미 수집한 버전도 상하위법 보완의 출발점으로 선택할 수 있습니다.
+  const canSelect = r => r.kind === 'law' ? !['queued','running'].includes(r.collection_status) : selectable(r);
+  const eligible = versions.items.filter(canSelect);
   const all = eligible.length > 0 && eligible.every(r => selected.has(rowKey(r)));
   useEffect(() => { if(allRef.current) allRef.current.indeterminate = selected.size > 0 && !all; }, [selected,all]);
   useEffect(() => () => { generation.current++; }, []);
   async function findNames(page=1, criteria=search) {
     const id=++generation.current;
+    setPlan(null);
     setSearch(criteria);setLoading(true);setSelectedName('');setVersions({items:[],total:0,page:1});setSelected(new Set());setCandidates({names:[],total:0,page});setMessage('법령명을 검색하고 있습니다…');
     try {
       const result=await api(`/api/management/names?${new URLSearchParams({query:criteria.query,kind:criteria.kind,page:String(page),source:'api'})}`);
@@ -30,6 +34,7 @@ export default function CollectionDialog({ initialQuery, initialKind, onClose, o
   }
   async function findVersions(name,page=1) {
     const id=++generation.current;
+    setPlan(null);
     setLoading(true);setSelectedName(name);setSelected(new Set());setVersions({items:[],total:0,page});setMessage('개정 버전을 조회하고 있습니다…');
     try {
       const result=await api(`/api/management/revisions?${new URLSearchParams({query:name,kind:search.kind,page:String(page),source:'api'})}`);
@@ -37,7 +42,7 @@ export default function CollectionDialog({ initialQuery, initialKind, onClose, o
       const items=result.items;
       const checked=new Set(items.filter(selectable).map(rowKey));
       setVersions({items,total:result.total,page});setSelected(checked);
-      setMessage(checked.size?`이 페이지의 미수집 버전 ${checked.size}건을 선택했습니다. 수집 시작을 눌러 진행하세요.`:'이 페이지에 미수집 버전이 없습니다. 다른 페이지도 확인할 수 있습니다.');
+      setMessage(checked.size?`이 페이지의 미수집 버전 ${checked.size}건을 선택했습니다. 상하위법 확인을 눌러 진행하세요.`:'이 페이지에 미수집 버전이 없습니다. 저장된 법령을 선택하면 상하위법을 보완할 수 있습니다.');
     } catch(e) {if(id===generation.current)setMessage(e.message);} finally {if(id===generation.current)setLoading(false);}
   }
   // Poll updates only remove unavailable selections; they never re-check items the user unchecked.
@@ -49,20 +54,30 @@ export default function CollectionDialog({ initialQuery, initialKind, onClose, o
       if(stale || id!==generation.current)return;
       const mapped=new Map(result.items.map(r=>[rowKey(r),r]));
       const items=versions.items.map(r=>({...r,...mapped.get(rowKey(r))}));
-      setVersions(v=>({...v,items}));setSelected(prev=>new Set([...prev].filter(key=>items.some(r=>rowKey(r)===key&&selectable(r)))));
+      setVersions(v=>({...v,items}));setSelected(prev=>new Set([...prev].filter(key=>items.some(r=>rowKey(r)===key&&canSelect(r)))));
     }).catch(e=>{if(!stale)setMessage(e.message);});
     return ()=>{stale=true;};
   },[refreshToken]);
-  function toggle(row,checked) {setSelected(prev=>{const next=new Set(prev);if(checked)next.add(rowKey(row));else next.delete(rowKey(row));return next;});}
+  function toggle(row,checked) {setPlan(null);setSelected(prev=>{const next=new Set(prev);if(checked)next.add(rowKey(row));else next.delete(rowKey(row));return next;});}
   async function start() {
-    const rows=versions.items.filter(r=>selected.has(rowKey(r))&&selectable(r));
+    const rows=versions.items.filter(r=>selected.has(rowKey(r))&&canSelect(r));
     if(!rows.length||submitting)return;
     setSubmitting(true);
+    const id=generation.current;
     try {
-      const result=await api('/api/management/collections',{items:rows.map(collectionItem)});
+      if(!plan){
+        setMessage('상하위법 체계와 함께 수집할 버전을 확인하고 있습니다…');
+        const preview=await api('/api/management/collection-plan',{items:rows.map(collectionItem)});
+        if(id!==generation.current)return;
+        setPlan(preview);setMessage(`전체 ${preview.items.length}개 버전 중 미수집 ${preview.new_count}개입니다. 아래 목록을 확인하고 함께 수집하세요.`);
+        return;
+      }
+      const result=await api('/api/management/collections',{plan_id:plan.plan_id});
+      if(id!==generation.current)return;
+      setPlan(null);
       setSelected(new Set());setVersions(prev=>({...prev,items:prev.items.map(r=>rows.some(x=>rowKey(x)===rowKey(r))?{...r,collection_status:'queued'}:r)}));
-      setMessage(`${result.queued}건을 수집 대기열에 등록했습니다. 수집 이력에서 진행 상황을 확인하세요.`);onQueued();
-    } catch(e) {setMessage(e.message);} finally {setSubmitting(false);}
+      setMessage(result.queued?`${result.queued}건을 수집 대기열에 등록했습니다. 수집 이력에서 진행 상황을 확인하세요.`:'이미 저장된 버전을 재사용하고 상하위법 관계를 갱신했습니다.');onQueued();
+    } catch(e) {if(id===generation.current){setPlan(null);setMessage(e.message);}} finally {if(id===generation.current)setSubmitting(false);}
   }
   return <Modal title="법령 수집" id="collection-dialog" className="collection-dialog" onClose={onClose}>
     <div className="collection-content"><ol className="collection-steps"><li>법령명 검색</li><li>개정 버전 조회</li><li>미수집 대상 선택·수집</li></ol>
@@ -73,13 +88,18 @@ export default function CollectionDialog({ initialQuery, initialKind, onClose, o
       <div className="collection-candidates">{candidates.names.map(name=><button key={name} disabled={loading||submitting} onClick={()=>findVersions(name)}>{name} · 버전 조회</button>)}</div>
       <Pagination page={candidates.page} total={candidates.total} onChange={p=>findNames(p)} label="법령 검색 페이지" disabled={loading||submitting}/>
       <div className="collection-version-heading"><h3>{selectedName?`${selectedName} 개정 버전`:'개정 버전'}</h3><span className="table-total">개정 버전 {versions.total}건</span></div>
-      <p className="collection-explanation">오늘까지 시행된 연혁을 조회합니다. 시행 예정은 제외하며, 현재 페이지의 미수집 버전만 자동 체크됩니다. 페이지를 바꾸면 선택이 초기화됩니다. 필요한 대상만 선택하세요.</p>
-      <div className="table-scroll"><table className="law-table"><thead><tr><th><input ref={allRef} type="checkbox" aria-label="조회된 미수집 버전 모두 선택" checked={all} disabled={!eligible.length||submitting} onChange={e=>setSelected(new Set(e.target.checked?eligible.map(rowKey):[]))}/></th><th>법령명</th><th>공포·발령일자</th><th>시행일자</th><th>수집 상태</th></tr></thead><tbody>
-        {versions.items.map(row=><tr key={rowKey(row)}><td><input type="checkbox" aria-label={`${row.name} ${dateText(row.effective)} 수집`} disabled={!selectable(row)||submitting} checked={selected.has(rowKey(row))} onChange={e=>toggle(row,e.target.checked)}/></td><td>{row.name}</td><td>{dateText(row.promulgated)}</td><td>{dateText(row.effective)}</td><td><Badge status={row.version?'completed':row.collection_status}/>{!row.version&&row.collection_status==='failed'&&<p className="collection-failure">{row.reason||'실패 사유가 기록되지 않았습니다. 수집 이력을 확인하세요.'}</p>}</td></tr>)}
+      <p className="collection-explanation">시행 예정은 제외합니다. 법령은 상하위 체계의 법률·시행령·시행규칙을 함께 확인합니다. 이미 수집한 버전도 선택하면 빠진 상하위법을 보완할 수 있습니다. 행정규칙은 자동으로 추가하지 않습니다.</p>
+      <div className="table-scroll"><table className="law-table"><thead><tr><th><input ref={allRef} type="checkbox" aria-label="조회된 버전 모두 선택" checked={all} disabled={!eligible.length||submitting} onChange={e=>{setPlan(null);setSelected(new Set(e.target.checked?eligible.map(rowKey):[]));}}/></th><th>법령명</th><th>공포·발령일자</th><th>시행일자</th><th>수집 상태</th></tr></thead><tbody>
+        {versions.items.map(row=><tr key={rowKey(row)}><td><input type="checkbox" aria-label={`${row.name} ${dateText(row.effective)} 수집`} disabled={!canSelect(row)||submitting} checked={selected.has(rowKey(row))} onChange={e=>toggle(row,e.target.checked)}/></td><td>{row.name}</td><td>{dateText(row.promulgated)}</td><td>{dateText(row.effective)}</td><td><Badge status={row.version?'completed':row.collection_status}/>{!row.version&&row.collection_status==='failed'&&<p className="collection-failure">{row.reason||'실패 사유가 기록되지 않았습니다. 수집 이력을 확인하세요.'}</p>}</td></tr>)}
         {!versions.items.length&&<EmptyRow columns={5}>{loading?'조회 중입니다…':selectedName?'조회된 개정 버전이 없습니다.':'법령명을 검색하고 버전을 조회하세요.'}</EmptyRow>}
       </tbody></table></div>
       <Pagination page={versions.page} total={versions.total} onChange={p=>findVersions(selectedName,p)} label="수집할 버전 페이지" disabled={loading||submitting}/>
-      <p id="collection-status" role="status">{message}</p><div className="collection-footer"><span className="muted">본문 수집 후 제목·본문 임베딩을 생성합니다.</span><span>{selected.size}건 선택</span><button className="primary-button" disabled={!selected.size||loading||submitting} onClick={start}>{submitting?'등록 중…':'수집 시작'}</button></div>
+      {plan&&<section aria-label="상하위법 동반 수집 목록"><h3>함께 수집할 법령</h3>
+        <p className="muted">체계도에 제공된 버전을 우선 사용합니다. 누락되거나 선택 기간에 맞지 않는 버전만 연혁으로 보완합니다. 저장된 버전은 다시 수집하지 않습니다.</p>
+        {plan.warnings.map(w=><p key={w} className="collection-failure">{w}</p>)}
+        <div className="table-scroll"><table className="law-table"><thead><tr><th>법령명</th><th>공포일</th><th>시행일</th><th>처리</th></tr></thead><tbody>{plan.items.map(r=><tr key={`${r.kind}-${r.mst}-${r.effective}`}><td>{r.name}{r.requested?' (선택)':''}</td><td>{dateText(r.promulgated)}</td><td>{dateText(r.effective)}</td><td>{r.collected?'저장됨 · 건너뛰기':'수집 예정'}</td></tr>)}</tbody></table></div>
+      </section>}
+      <p id="collection-status" role="status">{message}</p><div className="collection-footer"><span className="muted">본문 수집 후 제목·본문 임베딩을 생성합니다.</span><span>{selected.size}건 선택</span><button className="primary-button" disabled={!selected.size||loading||submitting} onClick={start}>{submitting?'처리 중…':plan?'함께 수집 시작':'상하위법 확인'}</button></div>
     </div>
   </Modal>;
 }

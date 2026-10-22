@@ -244,5 +244,7 @@ def test_archived_html_viewer_upgrades_without_api_or_embeddings(tmp_path):
         assert '[시행 2020.01.01]' in response.text
         assert 'id="선박안전법-제3조"' in response.text
         assert 'aria-label="조문 목차"' in response.text
-        assert response.text==html_path.read_text(encoding='utf-8')
+        # 기준일별 참조는 응답에만 추가하고, 보관 HTML에는 특정 날짜를 고정하지 않습니다.
+        assert '참조 연결 기준일:' in response.text
+        assert '참조 연결 기준일:' not in html_path.read_text(encoding='utf-8')
         assert (tmp_path/'raw'/(saved['version']+'.xml')).read_bytes()==original

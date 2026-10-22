@@ -11,7 +11,7 @@ function HistoryDialog({ onClose, refreshToken, onPending }) {
   return <Modal title="수집 이력" id="history-dialog" className="history-dialog" onClose={onClose}><div className="history-content">
     <div className="last-collection"><span aria-hidden="true">▤</span><strong>마지막 수집 완료 일시</strong><span>{timeText(data.last_completed)}</span></div>
     <p role="status">{error}</p><div className="table-scroll"><table className="law-table"><thead><tr><th>수집일시</th><th>구분</th><th>법령명</th><th>공포·발령일자</th><th>시행일자</th><th>수집 상태</th><th>처리 사유</th></tr></thead><tbody>
-      {data.items.map(row=><tr key={row.id}><td>{timeText(row.finished_at||row.started_at||row.requested_at)}</td><td>{kindLabel(row.kind)}</td><td>{row.name}</td><td>{dateText(row.promulgated)}</td><td>{dateText(row.effective)}</td><td><Badge status={row.status}/></td><td className="failure-reason">{row.reason||'—'}</td></tr>)}
+      {data.items.map(row=><tr key={row.id}><td>{timeText(row.finished_at||row.started_at||row.requested_at)}</td><td>{kindLabel(row.kind)}</td><td>{row.name}</td><td>{dateText(row.promulgated)}</td><td>{dateText(row.effective)}</td><td><Badge status={row.status}/></td><td className="failure-reason">{row.reason||'—'}{row.hierarchy_status&&<p>{row.hierarchy_status==='completed'?'상하위법 함께 수집 완료':`상하위법 수집 미완료 · 미수집 ${row.hierarchy_missing}건`}</p>}{row.hierarchy_warnings?.map(w=><p key={w}>{w}</p>)}</td></tr>)}
       {!data.items.length&&<EmptyRow columns={7}>{loading?'이력을 불러오는 중입니다…':'수집 이력이 없습니다.'}</EmptyRow>}
     </tbody></table></div><Pagination page={page} total={data.total} onChange={setPage} label="수집 이력 페이지" disabled={loading}/><div className="dialog-footer"><button className="primary-button" onClick={onClose}>확인</button></div>
   </div></Modal>;

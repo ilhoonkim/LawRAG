@@ -5,7 +5,7 @@ from queue import Queue, Empty
 from threading import Thread, Event
 from typing import Literal
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from .config import Settings
@@ -173,7 +173,7 @@ def create_app(settings=None, provider=None, law_api=None):
     # 출처 HTML은 원문 해시로 지정된 수집 버전을 보여줍니다.
     # 파일명 형식을 제한해 임의 경로 접근을 막고, 뷰어 갱신도 같은 XML로만 수행합니다.
     @app.get('/documents/{filename}')
-    def document(filename: str):
+    def document(filename: str, as_of: date | None = None):
         import re
         if not re.fullmatch(r'[0-9a-f]{20}\.html', filename):
             raise HTTPException(404, '문서가 없습니다.')
@@ -196,6 +196,24 @@ def create_app(settings=None, provider=None, law_api=None):
                 temporary.replace(path)
             finally:
                 temporary.unlink(missing_ok=True)
+        if raw.is_file():
+            from .document_links import reference_resolver
+            from .temporal import today_in_korea
+            with store.connect() as db:
+                row = db.execute('SELECT kind FROM law_versions WHERE version=?', (path.stem,)).fetchone()
+            if row and row['kind'] == 'law':
+                law = parse_law(raw.read_bytes())
+                if law.version != path.stem:
+                    raise HTTPException(409, '보관 XML과 요청 버전이 일치하지 않습니다.')
+                # 채팅 출처는 질문 기준일을 전달합니다. 관리 화면에서 과거 문서를 직접
+                # 열면 그 시행일, 현재 버전이면 오늘을 사용하며 원문 버전은 바꾸지 않습니다.
+                cutoff = as_of or (today_in_korea() if law.version in {
+                    v['version'] for v in store.temporal_versions()['versions']} else store._date(law.effective))
+                if cutoff and cutoff < store._date(law.effective):
+                    raise HTTPException(400, '문서 시행일 이전으로 참조 기준일을 지정할 수 없습니다.')
+                if cutoff:
+                    page = render_html(law, reference_resolver=reference_resolver(store, law, cutoff), reference_date=cutoff)
+                    return HTMLResponse(page, headers={'Cache-Control': 'no-store'})
         return FileResponse(path, media_type='text/html')
 
     static = Path(__file__).parent / 'static'

@@ -7,7 +7,7 @@ import 'pretendard/dist/web/variable/pretendardvariable.css';
 import { ChatIcon, LawIcon, HomeIcon } from './Icons';
 import './style.css';
 
-function sourceLoaded(event) {
+function sourceLoaded(event, onTitle) {
   const frame = event.currentTarget;
   const win = frame.contentWindow;
   function syncToc() {
@@ -18,6 +18,10 @@ function sourceLoaded(event) {
         link.scrollIntoView({block:'nearest'});
       } else link.removeAttribute('aria-current');
     });
+    // 다른 법령으로 이동한 뒤에도 팝업 제목이 최초 근거의 법령명에 머물지 않게 합니다.
+    const lawName=frame.contentDocument.querySelector('.document-header h1')?.textContent;
+    const article=frame.contentDocument.querySelector('section:target h2')?.textContent;
+    if(lawName)onTitle([lawName,article].filter(Boolean).join(' '));
   }
   syncToc();
   win.addEventListener('hashchange', syncToc);
@@ -28,6 +32,8 @@ function App() {
   const [visitedManagement,setVisitedManagement]=useState(location.hash==='#laws');
   const [status,setStatus]=useState(null);
   const [source,setSource]=useState(null);
+  const [sourceCaption,setSourceCaption]=useState('');
+  const openSource=useCallback(row=>{setSourceCaption('');setSource(row);},[]);
   const [error,setError]=useState('');
   const refreshStatus=useCallback(async()=>{try{setStatus(await api('/api/status'));setError('');}catch(e){setError(e.message);}},[]);
   useEffect(()=>{refreshStatus();},[refreshStatus]);
@@ -35,10 +41,10 @@ function App() {
   return <>
     <nav className="app-nav" aria-label="주 메뉴"><a className="app-logo" href="#chat" aria-label="LawRAG 홈">L<span>R</span></a><a className={`app-menu ${page==='laws'?'selected':''}`} href="#laws" aria-current={page==='laws'?'page':undefined}><LawIcon/>법령관리</a><a className={`app-menu ${page==='chat'?'selected':''}`} href="#chat" aria-current={page==='chat'?'page':undefined}><ChatIcon/>채팅</a></nav>
     <div className="app-shell"><div className="app-topbar"><HomeIcon/><span className="breadcrumb-divider">/</span><strong>LawRAG</strong><span className="breadcrumb-divider">/</span><span>{page==='laws'?'법령 API 수집 관리':'채팅'}</span>{error&&<span role="status">{error}</span>}</div>
-      <Chat visible={page==='chat'} status={status} onSource={setSource}/>
-      {visitedManagement&&<LawManagement visible={page==='laws'} onSource={setSource} onStatusChange={refreshStatus}/>}
+      <Chat visible={page==='chat'} status={status} onSource={openSource}/>
+      {visitedManagement&&<LawManagement visible={page==='laws'} onSource={openSource} onStatusChange={refreshStatus}/>}
     </div>
-    {source&&<Modal title={`${source.law_name} ${source.number} ${source.title||''}`} id="source-dialog" onClose={()=>setSource(null)}><iframe onLoad={sourceLoaded} title="법령 원문 조문" src={source.html_url} sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"/></Modal>}
+    {source&&<Modal title={sourceCaption||`${source.law_name} ${source.number} ${source.title||''}`} id="source-dialog" onClose={()=>setSource(null)}><iframe onLoad={e=>sourceLoaded(e,setSourceCaption)} title="법령 원문 조문" src={source.html_url} sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"/></Modal>}
   </>;
 }
 createRoot(document.getElementById('root')).render(<App/>);

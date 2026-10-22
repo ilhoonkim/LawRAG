@@ -1,6 +1,7 @@
 """Field-aware retrieval and rank fusion, using existing article embeddings."""
 import re
 from urllib.parse import quote
+from .temporal import today_in_korea
 import sqlite_vec
 from .laws import SetupError
 from .store import grams, body_text, expanded_query
@@ -113,6 +114,7 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
            limit=20, mode='hybrid', fusion='weighted', compare=False):
     if fusion not in ('weighted','rrf') or not 0 <= threshold <= 1:
         raise ValueError('검색 결합 방식 또는 임계치가 올바르지 않습니다.')
+    cutoff = cutoff or today_in_korea()
     selected = store.temporal_versions(cutoff)['versions']
     queries = list(dict.fromkeys([question, *variants]))
     fusion_metadata = {'queries': queries, 'threshold_basis': 'weighted_score',
@@ -222,7 +224,7 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
             retrieval_route='metadata' if not best['original_eligible'] else 'source',
             matched_query=best['query'], matched_units=best['matches'], context_restored=True,
             retrieval_queries=[s['query'] for s in observations if s['original_eligible'] or s['metadata_eligible']],
-            html_url='/documents/'+row['version']+'.html#'+quote(row['section_id'],safe=''))
+            html_url='/documents/'+row['version']+'.html?as_of='+cutoff.isoformat()+'#'+quote(row['section_id'],safe=''))
         result.append(out)
     # UI는 계산 방식과 무관하게 score를 '관련도 점수'로 표시합니다.
     # compare도 같은 후보·같은 계산 결과에서 정렬 방식만 달리해 비교합니다.

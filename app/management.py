@@ -1,5 +1,5 @@
-"""Category, version and collection management; no automatic collection."""
-from datetime import datetime, timezone
+"""Category, version and explicit collection plans, including official law families."""
+from datetime import datetime, timezone, timedelta
 import json
 import threading
 from typing import Literal
@@ -39,6 +39,10 @@ class CollectionInput(BaseModel):
     keyword_only: Literal[False] = False
 
 
+class PlannedCollectionInput(BaseModel):
+    plan_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+
+
 class Management:
     def __init__(self, store, provider, api, *, recover_pending=True):
         self.store, self.provider, self.api = store, provider, api
@@ -54,6 +58,13 @@ class Management:
                     promulgated TEXT, effective TEXT, status TEXT, requested_at TEXT,
                     started_at TEXT, finished_at TEXT, reason TEXT, version TEXT, keyword_only INTEGER);
                 CREATE INDEX IF NOT EXISTS collection_source ON collection_history(kind,mst,requested_at);
+                CREATE TABLE IF NOT EXISTS collection_plans (
+                    id TEXT PRIMARY KEY, created_at TEXT, payload TEXT, batch TEXT);
+                CREATE TABLE IF NOT EXISTS collection_batch_plans (
+                    batch TEXT PRIMARY KEY, plan_id TEXT);
+                CREATE TABLE IF NOT EXISTS law_hierarchy_snapshots (
+                    mst TEXT, effective TEXT, fetched_at TEXT, payload TEXT,
+                    PRIMARY KEY(mst,effective));
             ''')
             register_catalog(db)
             for row in db.execute('SELECT DISTINCT name,kind FROM law_versions').fetchall():
@@ -148,6 +159,34 @@ class Management:
         if settings is not None and not settings.api_key:
             raise SetupError('.env의 LLM_API_KEY를 입력하고 서버를 재시작하세요. 수집은 임베딩까지 완료해야 합니다.')
 
+    def plan_collection(self, request):
+        from .hierarchy import build_plan
+        plan = build_plan(self, request.items)
+        plan_id = uuid4().hex
+        with self.store.connect() as db:
+            db.execute('INSERT INTO collection_plans VALUES(?,?,?,?)',
+                       (plan_id, now(), json.dumps(plan, ensure_ascii=False), ''))
+            for family in plan['families']:
+                for member in [family, *family['members']]:
+                    db.execute('INSERT OR REPLACE INTO law_hierarchy_snapshots VALUES(?,?,?,?)',
+                        (member['mst'], member['effective'], now(), json.dumps(family, ensure_ascii=False)))
+        return {'plan_id': plan_id, **plan}
+
+    def queue_plan(self, plan_id):
+        with self.store.connect() as db:
+            row = db.execute('SELECT * FROM collection_plans WHERE id=?', (plan_id,)).fetchone()
+        if row is None or datetime.fromisoformat(row['created_at']) < datetime.now(timezone.utc) - timedelta(hours=1):
+            raise ValueError('수집 계획이 만료되었습니다. 상하위법을 다시 확인해 주세요.')
+        plan = json.loads(row['payload'])
+        # 서버가 만든 계획만 확장된 크기를 허용합니다. 각 항목은 다시 검증하고,
+        # 실제 중복 여부는 queue의 쓰기 트랜잭션 안에서 재확인합니다.
+        request = CollectionInput.model_construct(items=[CollectionItem(**r) for r in plan['items']], keyword_only=False)
+        result = self.queue(request)
+        with self.store.connect() as db:
+            db.execute('UPDATE collection_plans SET batch=? WHERE id=?', (result['batch'], plan_id))
+            db.execute('INSERT INTO collection_batch_plans VALUES(?,?)', (result['batch'], plan_id))
+        return {**result, 'plan_id': plan_id, 'warnings': plan['warnings']}
+
     def queue(self, request, *, reindex=False):
         self.require_collection_keys()
         batch = uuid4().hex
@@ -216,6 +255,24 @@ class Management:
                 ORDER BY requested_at DESC LIMIT 10 OFFSET ?''', (*args, (page-1)*10))]
             pending = db.execute(f"SELECT count(*) FROM collection_history {where + ' AND' if where else 'WHERE'} status IN ('queued','running')", args).fetchone()[0]
             last = db.execute("SELECT max(finished_at) FROM collection_history WHERE status='completed'").fetchone()[0]
+            # 본문 완료와 동반 법령 완료를 구별합니다. 일부 실패를 전체 체계도 완료로
+            # 표시하지 않고, 재계획하면 저장된 항목은 건너뛰고 빠진 항목만 재시도합니다.
+            batches = list({r['batch'] for r in rows})
+            plans = {r['batch']: json.loads(r['payload']) for r in db.execute(
+                'SELECT b.batch,p.payload FROM collection_batch_plans b JOIN collection_plans p ON p.id=b.plan_id WHERE b.batch IN (' + ','.join('?' for _ in batches) + ')',
+                batches)} if batches else {}
+            states = {}
+            for row in rows:
+                plan = plans.get(row['batch'])
+                if plan is None:
+                    continue
+                if row['batch'] not in states:
+                    states[row['batch']] = sum(not bool(db.execute(
+                        'SELECT 1 FROM law_versions WHERE kind=? AND mst=? AND effective=?',
+                        (p['kind'], p['mst'], p['effective'])).fetchone()) for p in plan['items'])
+                row['hierarchy_status'] = 'incomplete' if states[row['batch']] or plan['warnings'] else 'completed'
+                row['hierarchy_missing'] = states[row['batch']]
+                row['hierarchy_warnings'] = plan['warnings']
         return {'items': rows, 'total': total, 'page': page, 'pending': pending, 'last_completed': last}
 
     def articles(self, version, page):
@@ -270,11 +327,15 @@ def management_router(manager):
     # 202는 수집 완료가 아니라 대기 이력 등록 성공입니다.
     # 실제 완료/실패는 백그라운드 작업이 기록하며 /history에서 확인합니다.
     @router.post('/collections', status_code=202)
-    def collect(body: CollectionInput, background: BackgroundTasks):
-        result = manager.queue(body)
+    def collect(body: PlannedCollectionInput | CollectionInput, background: BackgroundTasks):
+        result = manager.queue_plan(body.plan_id) if isinstance(body, PlannedCollectionInput) else manager.queue(body)
         if result['ids']:
             background.add_task(manager.run, result['ids'])
         return result
+
+    @router.post('/collection-plan')
+    def collection_plan(body: CollectionInput):
+        return manager.plan_collection(body)
 
     @router.get('/history')
     def history(page: int = Query(default=1, ge=1), batch: str | None = Query(default=None, pattern=r'^[a-f0-9]{32}$')):

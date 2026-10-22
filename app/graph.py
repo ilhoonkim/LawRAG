@@ -78,18 +78,21 @@ def expand(store, evidence, *, cutoff, question='', limit=40):
             for r in rows:
                 node = {**r,'version':version,'law_name':law['name'],'effective':law['effective'],
                         'law_id':law['law_id'],'source_url':law['source_url'],'id':version+':'+r['number'],
-                        'html_url':'/documents/'+version+'.html#'+quote(r['section_id'],safe='')}
+                        'html_url':'/documents/'+version+'.html?as_of='+cutoff.isoformat()+'#'+quote(r['section_id'],safe='')}
                 nodes[key(node)] = node
             for r in db.execute('SELECT * FROM annex_nodes WHERE version=?',(version,)):
                 node = {**dict(r),'law_name':law['name'],'effective':law['effective'],
                         'law_id':law['law_id'],'id':version+':'+r['number'],'kind':'annex',
                         'source_url':r['source_url'] or law['source_url'],
-                        'html_url':'/documents/'+version+'.html#'+quote(r['section_id'],safe='')}
+                        'html_url':'/documents/'+version+'.html?as_of='+cutoff.isoformat()+'#'+quote(r['section_id'],safe='')}
                 annexes[key(node)] = node
     named = {}
     for v in versions:
         named.setdefault(canonical(v['name']),[]).append(v)
-    declared = {version:aliases(text) for version,text in documents.items()}
+    from .document_links import hierarchy_aliases
+    declared = {version: {**hierarchy_aliases(store, selected[version]['mst'],
+        selected[version]['effective'], selected[version]['name']), **aliases(text)}
+        for version,text in documents.items()}
     edges = {k:links(node,declared.get(node['version'],{})) for k,node in nodes.items()}
     expanded, missing, additions = [dict(e) for e in evidence], [], {}
     seen = {key(e) for e in evidence}

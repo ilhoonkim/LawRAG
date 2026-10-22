@@ -135,7 +135,7 @@ def reference_heading(number, title):
     return display + (f'({title})' if title and title not in (number, display) else '')
 
 
-def render_html(law: Law) -> str:
+def render_html(law: Law, *, reference_resolver=None, reference_date=None) -> str:
     esc = html.escape
     toc_parts, sections, target_styles = [], [], []
     last_chapter = ''
@@ -168,7 +168,12 @@ def render_html(law: Law) -> str:
                 label = esc(reference_heading(number, target.title))
                 parts.append(f'<a href="#{quote(target.section_id,safe="")}">{label}</a>')
             else:
-                parts.append(esc(match[0]))
+                external = reference_resolver(article, match, number) if reference_resolver else None
+                if external:
+                    label = esc(reference_heading(number, external['title']))
+                    parts.append(f'<a href="{esc(external["url"], quote=True)}" title="{esc(external["name"], quote=True)}">{label}</a>')
+                else:
+                    parts.append(esc(match[0]))
             cursor = match.end()
         parts.append(esc(article.body[cursor:]))
         return ''.join(parts)
@@ -186,9 +191,10 @@ def render_html(law: Law) -> str:
         sections.append(f'<section id="{esc(annex.section_id, quote=True)}"><h2>{esc(heading(annex.number,annex.title))}</h2><pre>{body}</pre>{link}</section>')
     def date_label(value):
         return f'{value[:4]}.{value[4:6]}.{value[6:]}' if re.fullmatch(r'\d{8}',value or '') else value or '미상'
+    date_note = f'<span>참조 연결 기준일: {esc(reference_date.isoformat())}</span>' if reference_date else ''
     return f'''<!doctype html><html lang="ko" data-viewer-version="{VIEWER_VERSION}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(law.name)}</title>
 <style>{VIEWER_CSS}{''.join(target_styles)}</style></head><body>
-<header class="document-header"><h1>{esc(law.name)}</h1><p class="document-meta">[시행 {esc(date_label(law.effective))}] [공포·발령 {esc(date_label(law.promulgated))}]<a href="{esc(law.source_url,quote=True)}" target="_blank" rel="noopener noreferrer">법령정보센터 원문</a></p></header>
+<header class="document-header"><h1>{esc(law.name)}</h1><p class="document-meta">[시행 {esc(date_label(law.effective))}] [공포·발령 {esc(date_label(law.promulgated))}]<a href="{esc(law.source_url,quote=True)}" target="_blank" rel="noopener noreferrer">법령정보센터 원문</a>{date_note}</p></header>
 <div class="document-layout"><nav class="toc" aria-label="조문 목차"><h2 class="toc-title">조문 목차</h2>{''.join(toc_parts)}</nav>
 <main class="law-content" aria-label="법령 본문">{''.join(sections)}<details class="source-note"><summary>자료 안내</summary><p>수집한 해당 버전의 API 텍스트입니다. 조문 줄바꿈과 참조 제목을 표시합니다. API에서 누락된 수식·이미지·별표 및 원래 페이지 배치는 복원되지 않습니다. 외부 원문 링크는 법령정보센터의 현재 화면으로 연결될 수 있으므로 시행일을 확인하세요.</p></details></main></div></body></html>'''
 
@@ -251,6 +257,13 @@ class LawAPI:
                     self._revision_cache.pop(next(iter(self._revision_cache)))
                 self._revision_cache[key] = (monotonic(), rows)
         return {'total': len(rows), 'page': page, 'laws': rows[(page-1)*display:page*display]}
+
+    def hierarchy(self, mst):
+        """선택한 MST의 공식 상하위법 체계도. 연관 키워드 검색 결과와 구분합니다."""
+        from .hierarchy import parse_hierarchy
+        if not re.fullmatch(r'\d{1,20}', mst):
+            raise ValueError('체계도 조회에 유효한 법령일련번호가 필요합니다.')
+        return parse_hierarchy(self.request('lawService.do', target='lsStmd', MST=mst, type='JSON'))
 
     def _search_page(self, query, page, kind, display, scope=None):
         params = {'query': query, 'display': display, 'page': page, 'target': 'eflaw' if kind == 'law' else kind, 'search': 1}

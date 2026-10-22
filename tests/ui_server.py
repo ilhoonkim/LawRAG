@@ -12,6 +12,10 @@ from app.config import Settings
 from test_management import FakeAPI, version
 from test_workflow import FakeProvider
 class UIAPI(FakeAPI):
+    def hierarchy(self,mst):
+        row=next(r for r in self.search('선박안전법',display=100)['laws'] if r['id']==mst)
+        return {'nodes':[{'key':'fixture','name':row['name'],'mst':mst,'law_id':'','level':'법률',
+                          'effective':row['effective'],'promulgated':row['promulgated']}], 'edges':[]}
     def search(self,query,page=1,kind='law',revisions=False,display=10):
         items=super().search(query,page,kind,revisions,display)['laws'][:3]
         items.extend({'id':str(i+200),'name':'선박안전법','kind':'law','effective':f'{2010+i}0101','promulgated':f'{2009+i}1201','status':'연혁'} for i in range(9))
