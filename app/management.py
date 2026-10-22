@@ -79,10 +79,11 @@ class Management:
 
     def categories(self):
         with self.store.connect() as db:
-            # 이전 버전이 남긴 기본/수동 등록 행은 삭제하지 않되, 실제 수집 버전이
-            # 없는 항목은 숨깁니다. 마지막 버전을 지우면 재시작 없이 다음 조회에 반영됩니다.
+            # 이전 기본/수동 등록 행이나 버전 정보만 남은 법령은 숨깁니다.
+            # 마지막 조문을 지우면 재시작 없이 다음 조회에 반영됩니다.
             return [dict(r) for r in db.execute('''SELECT c.* FROM categories c WHERE EXISTS
-                (SELECT 1 FROM law_versions v WHERE v.kind=c.kind AND compact_name(v.name)=compact_name(c.name))
+                (SELECT 1 FROM law_versions v JOIN version_articles a ON a.version=v.version
+                 WHERE v.kind=c.kind AND compact_name(v.name)=compact_name(c.name))
                 ORDER BY c.kind DESC, c.name''')]
 
     def add_category(self, name, kind):
@@ -205,7 +206,9 @@ class Management:
                 if item.effective and not self.collectible_date(item.effective):
                     raise ValueError('오늘 이후 시행 예정이거나 시행일이 잘못된 버전은 수집할 수 없습니다.')
                 duplicate = db.execute("SELECT 1 FROM collection_history WHERE kind=? AND mst=? AND effective=? AND status IN ('queued','running')", (item.kind, item.mst,item.effective)).fetchone()
-                collected = db.execute("SELECT 1 FROM law_versions WHERE kind=? AND mst=? AND (?='' OR effective=?)", (item.kind, item.mst,item.effective,item.effective)).fetchone()
+                collected = db.execute('''SELECT 1 FROM law_versions v WHERE kind=? AND mst=? AND (?='' OR effective=?)
+                    AND EXISTS (SELECT 1 FROM version_articles a WHERE a.version=v.version)''',
+                    (item.kind, item.mst,item.effective,item.effective)).fetchone()
                 if duplicate or (collected and not reindex):
                     continue
                 event_id = uuid4().hex
@@ -267,7 +270,8 @@ class Management:
                 if plan_id:
                     row = db.execute('SELECT payload FROM collection_plans WHERE id=?', (plan_id,)).fetchone()
                     for item in json.loads(row['payload'])['items'] if row else []:
-                        stored = db.execute("SELECT version FROM law_versions WHERE kind='law' AND mst=? AND effective=?", (item['mst'], item['effective'])).fetchone()
+                        stored = db.execute('''SELECT version FROM law_versions v WHERE kind='law' AND mst=? AND effective=?
+                            AND EXISTS (SELECT 1 FROM version_articles a WHERE a.version=v.version)''', (item['mst'], item['effective'])).fetchone()
                         if stored:
                             versions.add(stored['version'])
             from .delegation import refresh
@@ -306,7 +310,8 @@ class Management:
                     continue
                 if row['batch'] not in states:
                     states[row['batch']] = sum(not bool(db.execute(
-                        'SELECT 1 FROM law_versions WHERE kind=? AND mst=? AND effective=?',
+                        '''SELECT 1 FROM law_versions v WHERE kind=? AND mst=? AND effective=?
+                        AND EXISTS (SELECT 1 FROM version_articles a WHERE a.version=v.version)''',
                         (p['kind'], p['mst'], p['effective'])).fetchone()) for p in plan['items'])
                 row['hierarchy_status'] = 'incomplete' if states[row['batch']] or plan['warnings'] else 'completed'
                 row['hierarchy_missing'] = states[row['batch']]

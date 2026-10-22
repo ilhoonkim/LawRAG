@@ -8,7 +8,7 @@ from .config import Settings
 from .laws import LawAPI, SetupError
 from .management import Management, CollectionInput, now
 from .provider import Provider
-from .store import Store
+from .store import Store, body_text
 from .temporal import today_in_korea
 
 # 지정 목록의 일괄 수집 CLI: python -m app.preload_real_estate
@@ -64,10 +64,10 @@ def indexed(manager, row):
         stored = db.execute('SELECT version FROM law_versions WHERE kind=? AND mst=? AND effective=?', (row['kind'],row['id'],row['effective'])).fetchone()
         if not stored:
             return False
-        counts = db.execute('''SELECT count(*), sum(CASE WHEN vector IS NULL OR title_vector IS NULL
-            OR model IS NULL OR model!=? THEN 1 ELSE 0 END)
-            FROM version_articles WHERE version=?''', (manager.provider.fingerprint,stored['version'])).fetchone()
-        return counts[0] > 0 and not counts[1]
+        rows = list(db.execute('SELECT body,vector,title_vector,model FROM version_articles WHERE version=?', (stored['version'],)))
+        return bool(rows) and all(not body_text(r).strip() or
+            (r['vector'] is not None and r['title_vector'] is not None and r['model'] == manager.provider.fingerprint)
+            for r in rows)
 
 
 def record_discovery_failure(manager, item, reason):

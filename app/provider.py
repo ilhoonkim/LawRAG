@@ -114,20 +114,43 @@ class Provider:
     # 입력 순서를 보존한 벡터 목록을 반환합니다. API가 응답 순서를 바꿔도 index로 복원하며,
     # 누락·중복 인덱스, 비정상 수치, 영벡터를 저장 전에 차단합니다.
     def embed(self, texts):
-        if any(len(t) > 24000 for t in texts):
-            raise ValueError('매우 긴 조문이 있습니다. 현재 조 단위 임베딩 입력 한도(24,000자)를 초과했습니다.')
-        vectors = []
-        for start in range(0, len(texts), 16):
-            batch = texts[start:start+16]
-            result = self.post('/embeddings', {'model': self.settings.embedding_model, 'input': batch})
+        from .embedding_inputs import BATCH_SIZE, split_text
+        # OpenAI는 배열 속 빈 문자열도 HTTP 400으로 거부합니다. 수집 시 제외하는
+        # 빈 조문 외에 다른 호출부의 잘못된 입력도 API 요청 전에 확인합니다.
+        for index, text in enumerate(texts):
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError(f'임베딩 입력 {index+1}번째가 비어 있습니다. 본문이 없는 조문은 색인에서 제외해야 합니다.')
+        pieces = [(index, chunk, len(chunk.encode('utf-8')))
+                  for index, text in enumerate(texts) for chunk in split_text(text) if chunk.strip()]
+        grouped = [[] for _ in texts]
+        dimension = None
+        for start in range(0, len(pieces), BATCH_SIZE):
+            batch = pieces[start:start+BATCH_SIZE]
+            result = self.post('/embeddings', {'model': self.settings.embedding_model, 'input': [p[1] for p in batch]})
             items = sorted(result['data'], key=lambda v: v['index'])
             if [v['index'] for v in items] != list(range(len(batch))):
                 raise ValueError('임베딩 응답 개수가 입력과 다릅니다.')
-            for item in items:
+            for piece, item in zip(batch, items):
                 vector = item['embedding']
                 if not vector or not all(math.isfinite(x) for x in vector) or not any(vector):
                     raise ValueError('잘못된 임베딩 벡터입니다.')
-                vectors.append(vector)
+                if dimension is not None and len(vector) != dimension:
+                    raise ValueError('임베딩 응답의 차원이 일치하지 않습니다.')
+                dimension = len(vector)
+                grouped[piece[0]].append((piece[2], vector))
+        vectors = []
+        for parts in grouped:
+            if len(parts) == 1:
+                vectors.append(parts[0][1])
+                continue
+            # 긴 조문은 모든 구간의 벡터를 길이 가중 평균하고 정규화합니다.
+            # DB와 출처는 여전히 조문 하나이며 원문·단서를 자르지 않습니다.
+            total = sum(weight for weight, _ in parts)
+            vector = [math.fsum(weight/total*v[i] for weight,v in parts) for i in range(dimension)]
+            norm = math.sqrt(math.fsum(x*x for x in vector))
+            if not math.isfinite(norm) or norm == 0:
+                raise ValueError('긴 조문의 통합 임베딩 벡터가 올바르지 않습니다.')
+            vectors.append([x/norm for x in vector])
         return vectors
 
     # Store.search()의 기존 검색어 확장 경로입니다. 현재 채팅은 rewrite_question()과

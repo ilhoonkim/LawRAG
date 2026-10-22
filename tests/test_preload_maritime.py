@@ -116,6 +116,20 @@ def test_partial_body_failure_retries_only_missing_document(manager):
     assert report['ok'] and manager.api.fetched==['200']
 
 
+def test_empty_version_is_hidden_and_collected_again(manager):
+    assert preload(manager, [ROWS[0]['name']], notify=lambda _: None)['ok']
+    with manager.store.connect() as db:
+        db.execute("DELETE FROM version_articles WHERE version IN (SELECT version FROM law_versions WHERE mst='200')")
+    assert ROWS[1]['name'] not in {r['name'] for r in manager.categories()}
+    planned = preload(manager, [ROWS[0]['name']], list_only=True, notify=lambda _: None)
+    item = next(r for r in planned['items'][0]['items'] if r['mst'] == '200')
+    assert not item['collected']
+    manager.api.fetched.clear()
+    report = preload(manager, [ROWS[0]['name']], notify=lambda _: None)
+    assert report['ok'] and manager.api.fetched == ['200']
+    assert ROWS[1]['name'] in {r['name'] for r in manager.categories()}
+
+
 def test_relation_failure_keeps_completed_body_and_reports_incomplete(manager):
     manager.api.fail_delegation=True
     report=preload(manager,[ROWS[0]['name']],notify=lambda _:None)

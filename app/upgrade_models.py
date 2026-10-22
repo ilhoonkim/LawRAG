@@ -7,7 +7,7 @@ import sqlite_vec
 from .config import Settings, ROOT, _MODELS_FROM_PROCESS
 from .laws import SetupError
 from .provider import Provider
-from .store import Store, body_text
+from .store import Store, body_text, article_vectors
 
 # 제목·본문 임베딩을 교체하는 유지보수 CLI: python -m app.upgrade_models
 # 서버를 종료하고 실행합니다. 조문 제목·본문 벡터를 현재 임베딩 모델로 갱신합니다.
@@ -24,7 +24,8 @@ def reindex(store, provider, report_path, notify=print):
             with store.connect() as db:
                 rows = [dict(r) for r in db.execute('SELECT * FROM version_articles WHERE version=? ORDER BY position', (version['version'],))]
             # DB의 모델 식별자와 제목/본문 벡터가 갖춰진 버전은 건너뛰어 재실행 비용을 줄입니다.
-            if rows and all(r['model'] == provider.fingerprint and r['vector'] and r['title_vector'] for r in rows):
+            if rows and all(not body_text(r).strip() or
+                            (r['model'] == provider.fingerprint and r['vector'] and r['title_vector']) for r in rows):
                 item['status'] = 'skipped'
                 report['skipped'] += 1
             else:
@@ -33,21 +34,19 @@ def reindex(store, provider, report_path, notify=print):
                     raise ValueError('보관 원문 XML이 없거나 버전 해시가 일치하지 않습니다.')
                 if not rows:
                     raise ValueError('재임베딩할 조문이 없습니다.')
-                texts = [body_text(r) for r in rows] + [f'{version["name"]} - {r["number"]}({r["title"]})' for r in rows]
-                vectors = provider.embed(texts)
-                if len(vectors) != len(texts) or len({len(v) for v in vectors}) != 1:
-                    raise ValueError('임베딩 응답 개수 또는 차원이 일치하지 않습니다.')
+                vectors, titles = article_vectors(rows, version['name'], provider)
                 # No DB mutation until every title/body vector for this version succeeded.
                 # 한 버전의 모든 임베딩 응답이 준비된 다음 DB를 한 번에 갱신합니다.
                 # API 실패로 같은 버전 안에 이전/새 모델 벡터가 반쯤 섞이지 않도록 하는 경계입니다.
                 with store.connect() as db:
                     for i, row in enumerate(rows):
-                        body = sqlite_vec.serialize_float32(vectors[i])
-                        title = sqlite_vec.serialize_float32(vectors[i + len(rows)])
+                        body = sqlite_vec.serialize_float32(vectors[i]) if vectors[i] is not None else None
+                        title = sqlite_vec.serialize_float32(titles[i]) if titles[i] is not None else None
+                        model = provider.fingerprint if body is not None else None
                         db.execute('UPDATE version_articles SET vector=?,title_vector=?,model=? WHERE version=? AND position=?',
-                                   (body,title,provider.fingerprint,version['version'],row['position']))
+                                   (body,title,model,version['version'],row['position']))
                         db.execute('UPDATE articles SET vector=?,model=? WHERE law_id IN (SELECT id FROM laws WHERE version=?) AND number=?',
-                                   (body,provider.fingerprint,version['version'],row['number']))
+                                   (body,model,version['version'],row['number']))
                 item['status'] = 'completed'
                 report['completed'] += 1
         except (SetupError, ValueError, OSError) as exc:

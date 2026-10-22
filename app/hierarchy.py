@@ -219,7 +219,8 @@ def build_plan(manager, items, *, current_only=False):
         db.executemany('INSERT OR REPLACE INTO revision_catalog VALUES(?,?,?,?,?)',
             [(r['kind'], r['mst'], r['name'], r['effective'], r['promulgated']) for r in result if r['effective']])
         for row in result:
-            row['collected'] = bool(db.execute('SELECT 1 FROM law_versions WHERE kind=? AND mst=? AND effective=?',
+            row['collected'] = bool(db.execute('''SELECT 1 FROM law_versions v WHERE kind=? AND mst=? AND effective=?
+                AND EXISTS (SELECT 1 FROM version_articles a WHERE a.version=v.version)''',
                 (row['kind'], row['mst'], row['effective'])).fetchone())
     return {'items': result, 'families': families, 'warnings': list(dict.fromkeys(warnings)),
             'new_count': sum(not r['collected'] for r in result), 'as_of': today}

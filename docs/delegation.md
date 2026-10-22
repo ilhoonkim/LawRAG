@@ -5,11 +5,31 @@
 앱 서버를 종료한 뒤 프로젝트 폴더에서 실행합니다.
 
 ```powershell
-git pull
-.\.venv\Scripts\python.exe -m app.preload_maritime
+git pull --ff-only origin main
+.\collect_current_laws.cmd
 ```
 
 기본 목록은 `app/preload_maritime.py`의 `LAWS`에 있습니다. 요청된 법률 31개와 공식 체계도의 시행령·시행규칙을 수집합니다. 하위 규칙이 여러 개면 모두 포함하며 행정규칙은 제외합니다. 법령별 **오늘 시행 중인 최신 버전 1개**만 고릅니다. 기존 `preload_real_estate`의 최근 3개 연혁 수집과 다른 명령입니다.
+
+Windows 실행 파일 `collect_current_laws.cmd`는 프로젝트의 `.venv`로 `app.preload_maritime`을 실행하며 종료 코드를 그대로 전달합니다. 뒤에 `--list-only`, `--law`, `--names-file`, `--data-dir` 옵션을 붙여도 됩니다. 원래 Python 명령도 계속 사용할 수 있습니다.
+
+### RAW·HTML을 지우고 DB도 초기화하여 다시 수집할 때
+
+실행 중인 앱과 수집 작업을 먼저 종료하세요. 다음 명령은 `.env`의 `DATA_DIR`에서 **법령 DB·수집 이력·관계와 DB 임시 파일**을 삭제합니다. `.env`의 API 키와 다른 파일은 유지합니다. PowerShell에서 순서대로 실행합니다.
+
+```powershell
+git pull --ff-only origin main
+if ($LASTEXITCODE -ne 0) { throw "git pull 실패: 업데이트를 먼저 완료하세요." }
+.\.venv\Scripts\python.exe -c "from app.config import Settings; d=Settings().data_dir; [(d/n).unlink(missing_ok=True) for n in ['laws.sqlite3','laws.sqlite3-wal','laws.sqlite3-shm','laws.sqlite3-journal']]; print('DB 초기화 완료:', d)"
+if ($LASTEXITCODE -ne 0) { throw "DB 초기화 실패: 실행 중인 앱·수집 작업을 종료하고 다시 시도하세요." }
+.\collect_current_laws.cmd
+```
+
+수집 결과를 확인한 뒤 서버를 실행합니다. 일부 수집 실패가 있으면 같은 수집 명령으로 재개하며 **DB 초기화 명령은 반복하지 않습니다.**
+
+```powershell
+.\.venv\Scripts\python.exe -m app.serve --lan
+```
 
 현재 버전은 `eflaw`, `nw=3` 현행 검색으로 확인합니다. 하위법도 체계도의 날짜만 믿지 않고 현행 검색으로 확인하며, 미래 시행·공포 버전은 제외합니다. `수상레저기구의 등록 및 검사에 관한 법령`은 `…법률`로 이름을 보완합니다. `해사안전법` 등 정확한 이름으로 현행 결과를 못 찾는 항목은 과거 버전이나 비슷한 후속 법으로 대체하지 않고 실패 사유를 남깁니다. 현행 명칭을 확인한 후 별도로 지정할 수 있습니다.
 

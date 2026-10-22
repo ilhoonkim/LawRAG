@@ -95,6 +95,10 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
     with store.connect() as db:
         for law in selected:
             for r in db.execute('SELECT * FROM version_articles WHERE version=? ORDER BY position',(law['version'],)):
+                # 이동 등으로 조번호만 남은 행은 의도적으로 벡터가 없습니다.
+                # 실제 본문이 있는 행의 벡터 누락 검사는 아래에서 그대로 수행합니다.
+                if not body_text(r).strip():
+                    continue
                 row = {**dict(r), 'law_name':law['name'], 'law_id':law['law_id'],
                              'effective':law['effective'], 'promulgated':law['promulgated'],
                              'source_url':law['source_url'], 'id':law['version']+':'+str(r['position'])}

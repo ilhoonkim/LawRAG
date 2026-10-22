@@ -96,7 +96,8 @@ def preload(manager, names=LAWS, *, list_only=False, notify=print):
                 entry['delegation'], missing = [], []
                 with manager.store.connect() as db:
                     for item in plan['items']:
-                        stored = db.execute("SELECT version FROM law_versions WHERE kind='law' AND mst=? AND effective=?", (item['mst'],item['effective'])).fetchone()
+                        stored = db.execute('''SELECT version FROM law_versions v WHERE kind='law' AND mst=? AND effective=?
+                            AND EXISTS (SELECT 1 FROM version_articles a WHERE a.version=v.version)''', (item['mst'],item['effective'])).fetchone()
                         if stored:
                             entry['delegation'].append({'name':item['name'], **delegation_status(manager.store, stored['version'])})
                         else:

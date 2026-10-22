@@ -30,6 +30,27 @@ def body_text(row):
     return re.sub(r'^\s*제\s*\d+\s*조(?:의\s*\d+)?\s*(?:\([^)]*\))?\s*', '', row['body'])
 
 
+def article_vectors(rows, law_name, provider, *, keyword_only=False):
+    """본문 없는 이동 조문은 보관만 하고, 본문 있는 조문의 제목·내용만 색인합니다."""
+    bodies = [body_text(r) for r in rows]
+    positions = [i for i, body in enumerate(bodies) if body.strip()]
+    vectors, title_vectors = [None]*len(rows), [None]*len(rows)
+    if keyword_only or not positions:
+        return vectors, title_vectors
+    texts = [bodies[i] for i in positions]
+    titles = [f'{law_name} - {rows[i]["number"]}({rows[i]["title"]})' for i in positions]
+    # 위치를 따로 보존하므로 중간 조문을 제외해도 다음 조문의 벡터가 밀리지 않습니다.
+    embeddings = provider.embed(texts + titles)
+    if len(embeddings) != 2*len(positions):
+        raise ValueError('임베딩 개수가 조문 제목·본문 입력 개수와 다릅니다.')
+    if len({len(v) for v in embeddings}) != 1:
+        raise ValueError('임베딩 차원이 일치하지 않습니다.')
+    for offset, position in enumerate(positions):
+        vectors[position] = embeddings[offset]
+        title_vectors[position] = embeddings[len(positions)+offset]
+    return vectors, title_vectors
+
+
 def lexical_components(question, row):
     query = expanded_query(question.replace(row['law_name'], ''))
     query = re.sub(r'\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{4}년\s*\d{1,2}월\s*\d{1,2}일', '', query)
@@ -151,15 +172,10 @@ class Store:
             existing = {r[0] for r in db.execute('SELECT DISTINCT model FROM articles WHERE vector IS NOT NULL AND law_id != ?', (law.id,))}
         if not archive_only and not keyword_only and existing - {provider.fingerprint}:
             raise SetupError('임베딩 모델이 기존 DB와 다릅니다. 별도 DATA_DIR로 전체 법령을 재색인하세요.')
-        texts = [body_text({'body': a.body}) for a in law.articles]
-        titles = [f'{law.name} - {a.number}({a.title})' for a in law.articles]
         # 수집 단계에서는 원문 제목·본문만 임베딩합니다. 채팅용 LLM은 호출하지 않습니다.
-        embeddings = [None] * (2*len(texts)) if keyword_only else provider.embed(texts + titles)
-        if len(embeddings) != 2*len(texts):
-            raise ValueError('임베딩 개수가 조문 제목·본문 입력 개수와 다릅니다.')
-        if not keyword_only and len({len(v) for v in embeddings}) != 1:
-            raise ValueError('임베딩 차원이 일치하지 않습니다.')
-        vectors, title_vectors = embeddings[:len(texts)], embeddings[len(texts):]
+        # 별표·별지 서식은 law.articles에 포함되지 않으므로 여기서 임베딩하지 않습니다.
+        vectors, title_vectors = article_vectors([vars(a) for a in law.articles], law.name, provider,
+                                                 keyword_only=keyword_only)
         filename = f'{law.version}.html'
         # Immutable artifacts written before the DB transaction. Old citations survive refresh.
         self.archive_raw(raw)
@@ -324,6 +340,8 @@ class Store:
             for law in selected:
                 for item in db.execute('SELECT * FROM version_articles WHERE version=? ORDER BY position', (law['version'],)):
                     row = dict(item)
+                    if not body_text(row).strip():
+                        continue
                     row.update(id=law['version']+':'+str(row['position']),law_id=law['law_id'],law_name=law['name'],
                         effective=law['effective'],promulgated=law['promulgated'],html=law['html'],source_url=law['source_url'])
                     rows.append(row)
