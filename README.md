@@ -102,6 +102,37 @@ git pull
 
 기존 상하위 본문의 **위임관계만** 보완하려면 `python -m app.backfill_delegation`을 실행합니다. API 원본과 조문별 관계를 저장하며 재임베딩은 없습니다. 상하위 조문은 LLM 입력과 화면 출처에 함께 포함하고, HTML에서도 상대 버전 문서로 연결합니다. [실행 옵션·관계 저장 구조·버전 검증 상세](docs/delegation.md)를 참고하세요.
 
+### 현행 행정규칙 67개 수집
+
+요청 목록 68행 중 띄어쓰기만 다른 `선령 20년 초과 내항 여객선의 선박검사기준`을 합친 **67개 행정규칙**을 수집합니다. 전체 목록은 [app/preload_admrul.py](app/preload_admrul.py)의 `RULES`에 있습니다. 앱 서버와 다른 수집 작업을 종료하고 프로젝트 폴더의 PowerShell에서 실행합니다. 기존 법령 DB·RAW·HTML은 그대로 유지하며 행정규칙을 추가합니다.
+
+```powershell
+git pull --ff-only origin main
+if ($LASTEXITCODE -ne 0) { throw "git pull 실패" }
+.\collect_current_admrul.cmd
+```
+
+래퍼 대신 `.\.venv\Scripts\python.exe -m app.preload_admrul`로도 실행할 수 있습니다. 실행일의 한국 날짜를 기준으로 **현행 행정규칙 검색(`target=admrul&nw=1`) 결과 중 발령일·시행일이 기준일 이하인 최신 버전 하나**를 선택합니다. 공백을 제외한 정확한 이름만 일치시키며, 폐지·시행 예정·명칭 변경 등으로 현재 버전을 확인하지 못한 항목은 실패 사유를 남기고 나머지를 계속 처리합니다. 과거 연혁이나 이름이 비슷한 규칙으로 임의 대체하지 않습니다.
+
+```powershell
+# 본문·임베딩 없이 수집 대상 버전만 확인
+.\collect_current_admrul.cmd --list-only
+# 특정 규칙만 수집 또는 재시도
+.\collect_current_admrul.cmd --rule "강선의 구조기준"
+# 다른 목록: UTF-8 텍스트, 한 줄에 이름 하나
+.\collect_current_admrul.cmd --names-file .\rules.txt
+```
+
+`--data-dir`로 별도 저장 경로도 지정할 수 있습니다. `.env`의 `LAW_API_OC`에 행정규칙 API 이용 권한이 있어야 하며, 실제 수집에는 임베딩 API 키가 필요합니다. 제목·본문만 임베딩하고 요약·예상 질문은 생성하지 않습니다. 상위 법령 수집이나 상하위 관계 자동 매핑은 이 명령에 포함하지 않습니다.
+
+결과는 `DATA_DIR/preload-admrul-report.json`과 관리 화면의 수집 이력에 남습니다. 완료한 규칙은 재실행 시 건너뛰고 실패·중단·벡터 또는 RAW/HTML 누락 항목만 다시 처리합니다. 새 개정본이 현행으로 확인되면 그 버전 하나를 추가하며 이전 자료를 삭제하지 않습니다. 이미지/첨부파일만 있고 API에 본문 텍스트가 없는 규칙은 원문 XML과 추출 필요 사유를 남깁니다. 종료 코드 `0`은 전체 완료, `1`은 미완료/처리 오류, `2`는 실행 설정 오류, `130`은 사용자 중단입니다.
+
+수집 후 서버를 다시 시작합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m app.serve --lan
+```
+
 ### 기존 수집 자료 전체의 상하위법 보완
 
 앱 서버를 `Ctrl+C`로 종료한 뒤 다음 명령을 실행합니다. 프로젝트 `.env`의 `LAW_API_OC`, `LLM_API_KEY`(또는 `OPENAI_API_KEY`), `DATA_DIR`를 사용합니다.

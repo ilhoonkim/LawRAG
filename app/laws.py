@@ -306,6 +306,9 @@ class LawAPI:
             params['nw'] = scope
         elif kind == 'law':
             params['nw'] = 3
+        elif kind == 'admrul':
+            # 행정규칙은 nw=1이 현행입니다. 법령의 현행 값(nw=3)과 다릅니다.
+            params['nw'] = 1
         root = xml_root(self.request('lawSearch.do', **params))
         if kind == 'law':
             nodes = root.findall('.//law')
@@ -319,7 +322,7 @@ class LawAPI:
         return {'total': total, 'page': page, 'laws': [
             {'id': text(n, keys[0]), 'name': text(n, keys[1]),
              'promulgated': text(n, keys[2]), 'effective': text(n, '시행일자'),
-             'status': text(n, '현행연혁코드'), 'kind': kind, 'law_id': text(n,'법령ID'),
+             'status': text(n, '현행연혁코드') or text(n, '현행연혁구분'), 'kind': kind, 'law_id': text(n,'법령ID'),
             'amendment': text(n, '제개정구분명')}
             for n in nodes]}
 
