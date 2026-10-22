@@ -102,7 +102,7 @@ export default function Chat({ visible, status, onSource }) {
       </div>)}</nav>
       <div className="sidebar-footer">법령을 찾고, 근거로 답합니다.<br />대화는 이 브라우저에 저장됩니다.</div>
     </aside>
-    <main><header><span className="agent-pill">◉ 법령 검색 에이전트</span><div className="chat-header-actions"><span id="connection" role="status">{storageError || (status ? `${status.laws.length}개 법령 · ${status.llm_configured ? 'AI 연결 설정됨' : 'AI 키 미설정'}` : '서버 상태 확인 중')}</span><button className="mobile-new-chat" disabled={busy} onClick={() => setActive(null)}>새 대화</button></div></header>
+    <main><header><span className="agent-pill">◉ 법령 검색 에이전트</span><div className="chat-header-actions"><span id="connection" role="status">{storageError || (status ? `${status.laws.length}개 법령 · ${status.llm_configured ? 'AI 연결 설정됨' : 'AI 연결 미설정'}` : '서버 상태 확인 중')}</span><button className="mobile-new-chat" disabled={busy} onClick={() => setActive(null)}>새 대화</button></div></header>
       <div id="messages" ref={messagesRef} aria-live="polite">
         {!current && <div className="welcome"><div className="welcome-icon">§</div><h1>법령에 묻고,<br />근거로 확인하세요.</h1><p>관련 조문을 찾아 답변과 원문을 함께 제공합니다.</p><button id="example" onClick={() => setQuestion('선박안전법에 적용받지 않는 선박의 종류는?')}>선박안전법에 적용받지 않는 선박의 종류는? ↗</button></div>}
         {messages.map((m,i) => <article key={i} className={`message ${m.role}`}>
@@ -129,7 +129,7 @@ export default function Chat({ visible, status, onSource }) {
           {!model && <option value="">서버 기본 모델</option>}
           {(modelInfo?.models || [status?.chat_model || 'gpt-4.1']).map(name => <option key={name} value={name}>{name}</option>)}
           <option value="custom">모델 ID 직접 입력</option>
-        </select>{model === 'custom' && <input aria-label="모델 ID" placeholder="예: gpt-5.4" required pattern="[a-zA-Z0-9][a-zA-Z0-9._:\-]+" maxLength={100} value={customModel} disabled={busy} onChange={e => setCustomModel(e.target.value)} />}
+        </select>{model === 'custom' && <input aria-label="모델 ID" placeholder="예: gpt-4.1 또는 조직/모델명" required pattern="[a-zA-Z0-9][a-zA-Z0-9._:\/\-]*" maxLength={200} value={customModel} disabled={busy} onChange={e => setCustomModel(e.target.value)} />}
         {modelInfo?.warning && <small>{modelInfo.warning}</small>}</div>
         <button id="send" type="submit" aria-label="질문 전송" disabled={busy}>↑</button></div>
       </form><small>기본은 현재 시행 중인 최신 수집 버전입니다. 과거 조회는 기준일을 지정하세요. 최신 개정 여부는 공식 원문을 확인하세요.</small></div>

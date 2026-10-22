@@ -141,7 +141,7 @@ def main(argv=None):
     settings = Settings()
     required = [('LAW_API_OC', settings.law_oc)]
     if not args.list_only:
-        required.append(('LLM_API_KEY', settings.api_key))
+        required.append(('임베딩 서버 설정(OpenAI: LLM_API_KEY / 사내: COMPANY_EMBEDDING_BASE_URL·MODEL)', settings.ai_configured('embedding')))
     missing = [key for key, value in required if not value]
     if missing:
         print('수집을 시작하지 않았습니다. 프로젝트 .env에 필요한 설정: ' + ', '.join(missing))

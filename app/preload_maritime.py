@@ -149,8 +149,8 @@ def main(argv=None):
         print('수집할 법령명을 입력하세요.')
         return 2
     settings = Settings()
-    if not settings.law_oc or (not args.list_only and not settings.api_key):
-        print('.env의 LAW_API_OC'+(' 및 LLM_API_KEY(또는 OPENAI_API_KEY)' if not args.list_only else '')+'를 확인하세요.')
+    if not settings.law_oc or (not args.list_only and not settings.ai_configured('embedding')):
+        print('.env의 LAW_API_OC'+(' 및 임베딩 서버 설정(OpenAI: LLM_API_KEY / 사내: COMPANY_EMBEDDING_BASE_URL·MODEL)' if not args.list_only else '')+'를 확인하세요.')
         return 2
     print('앱 서버를 종료한 뒤 실행하세요. 한국 날짜 '+today_in_korea().isoformat()+' 기준 현재 시행 버전만 수집합니다.')
     try:

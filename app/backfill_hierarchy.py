@@ -171,8 +171,8 @@ def main(argv=None):
     if not (directory / 'laws.sqlite3').is_file():
         print('기존 수집 DB가 없습니다. DATA_DIR 또는 --data-dir 경로를 확인하세요.')
         return 2
-    if not settings.law_oc or (not args.list_only and not settings.api_key):
-        print('프로젝트 .env의 LAW_API_OC'+(' 및 LLM_API_KEY(또는 OPENAI_API_KEY)' if not args.list_only else '')+'를 확인하세요.')
+    if not settings.law_oc or (not args.list_only and not settings.ai_configured('embedding')):
+        print('프로젝트 .env의 LAW_API_OC'+(' 및 임베딩 서버 설정(OpenAI: LLM_API_KEY / 사내: COMPANY_EMBEDDING_BASE_URL·MODEL)' if not args.list_only else '')+'를 확인하세요.')
         return 2
     print('앱 서버를 종료한 상태에서 실행하세요. 기존 본문은 유지하고 누락 자료만 수집합니다.')
     try:

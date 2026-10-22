@@ -42,6 +42,7 @@ LawRAG/
 ├─ docs/                      운영 명령과 세부 설계 문서
 ├─ tests/                     백엔드·API·브라우저 회귀 검사
 ├─ .env.example               환경 변수 예시
+├─ local.env.example          사내 AI 서버 연결·선택 예시
 ├─ requirements.txt           Python 의존성
 ├─ collect_current_laws.cmd   현행 법률·하위법 일괄 수집
 ├─ collect_current_admrul.cmd 현행 행정규칙 일괄 수집
@@ -61,7 +62,7 @@ LawRAG/
 | 검색 점수 | [retrieval.py](app/retrieval.py), [keywords.py](app/keywords.py) | 명사 일치·벡터 비교, 법령명 보조 점수, RRF, 후보 선정 |
 | 기준일·참조 확장 | [temporal.py](app/temporal.py), [graph.py](app/graph.py) | 적용 버전 선택, 참조·역참조·별표·정의·상하위 조문 확장 |
 | 답변 흐름 | [chat_pipeline.py](app/chat_pipeline.py), [evidence_review.py](app/evidence_review.py) | 후보 검토, 연결 조문 검토, 충분성 판단, 추가 검색, 답변 |
-| AI 연동 | [provider.py](app/provider.py), [http_retry.py](app/http_retry.py) | 임베딩·Chat Completions 호출, 응답 검증, 일시적 오류 재시도 |
+| AI 연동 | [ai_endpoints.py](app/ai_endpoints.py), [provider.py](app/provider.py), [http_retry.py](app/http_retry.py) | OpenAI/사내 서버 선택, 임베딩·Chat Completions 호출, 응답 검증·재시도 |
 | HTML 링크 | [references.py](app/references.py), [document_links.py](app/document_links.py) | 조문·별표 참조 추출, 법/영 약칭 해석, 문서 간 링크 |
 | 일괄 수집 | [preload_maritime.py](app/preload_maritime.py), [preload_admrul.py](app/preload_admrul.py) | 지정 법률·행정규칙 목록 수집 및 중단 후 재개 |
 
@@ -84,7 +85,7 @@ LawRAG/
 
 Python **3.12**와 SQLite 확장 로드가 가능한 환경이 필요합니다. 화면 개발 시에는 Node.js 22 LTS 이상을 권장합니다. 법령 API와 설정한 AI API 서버에 접속할 수 있어야 합니다.
 
-프로젝트 루트에서 `.env.example`을 `.env`로 복사하고 키를 입력합니다. **프로세스 환경 변수가 `.env`보다 우선**하며 변경 후 서버를 재시작합니다. `.env`와 기본 `data/`는 Git에서 제외합니다.
+프로젝트 루트에서 `.env.example`을 `.env`로 복사하고 키를 입력합니다. **프로세스 환경 변수 > `local.env` > `.env`** 순으로 적용하며 변경 후 서버를 재시작합니다. `local.env`가 없으면 기존 `.env` 설정으로 동작합니다. 두 설정 파일과 기본 `data/`는 Git에서 제외합니다.
 
 | 변수 | 기본값 | 용도 |
 | --- | --- | --- |
@@ -97,6 +98,26 @@ Python **3.12**와 SQLite 확장 로드가 가능한 환경이 필요합니다. 
 | `REFERENCE_LIMIT` | `40` | 한 차례 관계 확장의 추가 문서 수. 상한 80개 |
 | `CONTEXT_MAX_CHARS` | `60000` | 최종 근거 본문 예산. 조문 중간을 자르지 않음 |
 | `DATA_DIR` | 프로젝트 `data/` | DB·RAW·HTML·수집 보고서 저장 경로 |
+
+### OpenAI와 회사 sLLM·임베딩 서버 함께 사용
+
+채팅과 임베딩 서버를 **각각 독립적으로 선택**할 수 있습니다. 기본값은 둘 다 `openai`이며 기존 설정을 그대로 사용합니다. 사내 서버는 현재 OpenAI 호환 `/chat/completions`, `/embeddings` 형식을 지원합니다.
+
+```powershell
+if (!(Test-Path local.env)) { Copy-Item local.env.example local.env }
+notepad local.env
+```
+
+| `CHAT_BACKEND` | `EMBEDDING_BACKEND` | 사용 조합 |
+| --- | --- | --- |
+| `openai` | `openai` | 기존 OpenAI 채팅 + 임베딩 |
+| `company` | `openai` | 회사 sLLM + 기존 OpenAI 임베딩 |
+| `openai` | `company` | OpenAI 채팅 + 회사 임베딩 |
+| `company` | `company` | 채팅·임베딩 모두 회사 서버 |
+
+`local.env`에서 `COMPANY_CHAT_BASE_URL`, `COMPANY_CHAT_MODEL`, `COMPANY_EMBEDDING_BASE_URL`, `COMPANY_EMBEDDING_MODEL`에 주소·포트·모델을 지정합니다. 키는 서버별 `COMPANY_CHAT_API_KEY`, `COMPANY_EMBEDDING_API_KEY`로 분리하며, 비어 있으면 인증 헤더를 보내지 않습니다. 사내 연결에 OpenAI 키를 대신 보내거나 실패 시 OpenAI로 자동 전환하지 않습니다.
+
+채팅만 변경하면 재임베딩이 필요 없습니다. **임베딩 서버·모델을 변경하면 기존 벡터와 혼합할 수 없으므로 재색인하거나 별도 `DATA_DIR`를 사용**합니다. 서버 선택은 서버 설정 단위이며, 채팅창의 모델 선택은 현재 선택된 채팅 서버 안에서만 이루어집니다. [설정 예시·API 요청/응답 형식·재색인 절차](docs/company_ai.md)를 참고하세요.
 
 웹 검색·채팅은 **RRF + 후보 임계치 0.3으로 고정**합니다. 기존 `SEARCH_FUSION`, `SEARCH_THRESHOLD`, `SEARCH_TITLE_WEIGHT`, `SEARCH_MIN_TITLE_SCORE`, `SEARCH_MIN_BODY_SCORE`는 현재 웹 검색에 사용하지 않습니다. 요약·예상 질문 생성용 `METADATA_MODEL`도 사용하지 않습니다.
 
@@ -190,7 +211,7 @@ flowchart TD
 
 “별지 제1호서식을 제출해야 한다” 같은 조문 본문의 의무는 검색 대상입니다. 행정규칙은 구조화된 XML뿐 아니라 CDATA·HTML 단락·표·번호 목록도 처리하며, 원문에 조 번호가 없으면 `본문 구간 N`으로 저장합니다. 이미지·첨부파일만 있고 본문 텍스트가 없으면 추출 필요 사유와 원문을 남깁니다. OCR은 수행하지 않습니다.
 
-긴 임베딩 입력은 **UTF-8 최대 8,000바이트** 단위로 나누고 한 요청에 최대 16개 구간을 보냅니다. 이는 토큰 수가 아닌 보수적 입력 상한입니다. 구간별 벡터를 길이 가중 평균·정규화해 저장하며 근거 원문 자체는 자르지 않습니다. 수집 중에는 채팅용 요약 생성 LLM을 호출하지 않습니다.
+긴 임베딩 입력은 기본 **UTF-8 최대 8,000바이트** 단위로 나누고 한 요청에 최대 16개 구간을 보냅니다. `EMBEDDING_MAX_INPUT_BYTES`, `EMBEDDING_BATCH_SIZE`로 더 낮출 수 있습니다. 바이트 수는 토큰 수와 다르므로 사내 모델의 실제 한도에 맞춰 설정합니다. 구간별 벡터를 길이 가중 평균·정규화해 저장하며 근거 원문 자체는 자르지 않습니다. 수집 중에는 채팅용 요약 생성 LLM을 호출하지 않습니다.
 
 ### 파일과 DB 저장 구조
 
@@ -339,7 +360,7 @@ RRF 원점수 = 0.60 / (60 + 본문 순위)
 
 ### LLM 검토와 참조·상하위 근거
 
-후보는 조문 하나씩 순차 호출하지 않고 **묶음으로 검토**합니다. 본문 합계가 약 60,000자를 넘으면 나눠 최대 두 묶음을 동시에 처리합니다. 조문 전체를 전달해 단서·예외·적용 범위를 보존합니다. 응답 형식·후보 번호·판정 수를 검증하고 실패한 묶음만 한 번 재시도하며, 계속 실패하면 미검증 후보로 답변하지 않습니다.
+후보는 조문 하나씩 순차 호출하지 않고 **묶음으로 검토**합니다. 본문 합계가 기본 약 60,000자를 넘으면 나눠 최대 두 묶음을 동시에 처리합니다. 사내 모델의 문맥 길이에 따라 `EVIDENCE_REVIEW_MAX_CHARS`를 낮출 수 있습니다. 조문 전체를 전달해 단서·예외·적용 범위를 보존합니다. 응답 형식·후보 번호·판정 수를 검증하고 실패한 묶음만 한 번 재시도하며, 계속 실패하면 미검증 후보로 답변하지 않습니다.
 
 | 확장 대상 | 탐색·답변 처리 |
 | --- | --- |

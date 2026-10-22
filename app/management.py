@@ -163,8 +163,9 @@ class Management:
         if hasattr(self.api, 'oc') and not self.api.oc:
             raise SetupError('.env의 LAW_API_OC를 입력하고 서버를 재시작하세요.')
         settings = getattr(self.provider, 'settings', None)
-        if settings is not None and not settings.api_key:
-            raise SetupError('.env의 LLM_API_KEY를 입력하고 서버를 재시작하세요. 수집은 임베딩까지 완료해야 합니다.')
+        if settings is not None:
+            # 수집에는 선택된 임베딩 서버만 필요합니다. 사내 무인증 서버도 허용합니다.
+            settings.endpoint('embedding').validate()
 
     def plan_collection(self, request, *, current_only=False):
         from .hierarchy import build_plan

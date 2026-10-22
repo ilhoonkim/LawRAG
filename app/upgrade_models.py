@@ -15,7 +15,8 @@ TARGET = 'text-embedding-3-large'
 
 
 def reindex(store, provider, report_path, notify=print):
-    report = {'embedding_model': TARGET, 'completed': 0, 'skipped': 0, 'failed': 0, 'items': []}
+    report = {'embedding_model': provider.settings.endpoint('embedding').model if hasattr(provider,'settings') else TARGET,
+              'completed': 0, 'skipped': 0, 'failed': 0, 'items': []}
     with store.connect() as db:
         versions = [dict(r) for r in db.execute('SELECT * FROM law_versions ORDER BY name,effective')]
     for version in versions:
@@ -67,10 +68,20 @@ def configure(env_path):
 
 
 def main():
+    selected = Settings()
+    if selected.embedding_backend != 'openai' or selected.chat_backend != 'openai':
+        print('사내 서버 설정은 변경하지 않았습니다. 현재 선택한 임베딩 모델로 바꾸려면 python -m app.reindex_embeddings를 사용하세요.')
+        return 2
+    # local.env가 모델 설정을 덮어쓰는 경우 .env만 수정해서 성공했다고 안내하지 않습니다.
+    from .config import _LOCAL_VALUES
+    if any(_LOCAL_VALUES.get(k) not in (None,v) for k,v in
+           [('EMBEDDING_MODEL',TARGET),('CHAT_MODEL','gpt-4.1'),('RERANK_MODEL','')]):
+        print('local.env의 모델 설정이 우선합니다. 설정을 변경한 뒤 python -m app.reindex_embeddings를 사용하세요.')
+        return 2
     if _MODELS_FROM_PROCESS.get('EMBEDDING_MODEL', TARGET) != TARGET:
         print('프로세스의 EMBEDDING_MODEL이 .env보다 우선합니다. 해당 환경변수를 text-embedding-3-large로 변경한 뒤 다시 실행하세요.')
         return 2
-    settings = replace(Settings(), embedding_model=TARGET, chat_model='gpt-4.1', rerank_model='')
+    settings = replace(selected, embedding_model=TARGET, chat_model='gpt-4.1', rerank_model='')
     if not settings.api_key:
         print('.env의 LLM_API_KEY 또는 OPENAI_API_KEY가 필요합니다.')
         return 2

@@ -100,6 +100,7 @@ def parse_decisions(response, count):
 def filter_evidence(provider, question, candidates):
     if not candidates:
         return []
+    char_limit = min(BATCH_CHAR_LIMIT, max(1000, provider.settings.evidence_review_max_chars))
     batches, batch, size = [], [], len(question)
     for candidate in candidates:
         # Matched spans already occur in the full body. Avoid sending them twice.
@@ -109,14 +110,15 @@ def filter_evidence(provider, question, candidates):
             document['connection'] = {k:candidate.get(k) for k in
                 ('relation','referenced_by_law','referenced_by','reference_edges')}
         length = len(json.dumps(document,ensure_ascii=False))
-        if batch and (size+length>BATCH_CHAR_LIMIT or len(batch)>=15):
+        if batch and (size+length>char_limit or len(batch)>=15):
             batches.append(batch)
             batch, size = [], len(question)
         batch.append((candidate,document))
         size += length
     if batch:
         batches.append(batch)
-    model = provider.settings.rerank_model or provider.settings.chat_model
+    model = (provider.chat_model if provider.settings.chat_backend == 'company'
+             else provider.settings.rerank_model or provider.chat_model)
 
     def verify(batch):
         documents = [{'id':i,**doc} for i,(_,doc) in enumerate(batch,1)]
@@ -131,7 +133,7 @@ def filter_evidence(provider, question, candidates):
             request = {'model':model,'temperature':0,'response_format':response_format(model,len(batch)),
                 'messages':[{'role':'system','content':SYSTEM},
                             {'role':'user','content':json.dumps(payload,ensure_ascii=False)}]}
-            if model.startswith('gpt-5'):
+            if provider.settings.chat_backend == 'openai' and model.startswith('gpt-5'):
                 request.update(reasoning_effort='low',max_completion_tokens=8192)
             data = provider.post('/chat/completions',request)
             try:

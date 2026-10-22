@@ -14,6 +14,7 @@ from .provider import Provider
 from .store import Store
 from .management import Management, management_router
 from .chat_pipeline import retrieve, run_chat, STAGES
+from .ai_endpoints import MODEL_PATTERN
 
 # HTTP 진입점과 요청 검증을 담당합니다. 검색·답변 로직은 chat_pipeline.py,
 # 수집 작업과 이력은 management.py, DB 접근은 store.py로 이어집니다.
@@ -32,7 +33,7 @@ class Message(BaseModel):
 # 대화 이력은 브라우저가 요청에 담아 보냅니다. 이 API는 서버에 대화를 저장하지 않습니다.
 # 길이와 개수를 제한해 과거 대화가 프롬프트를 무제한으로 차지하지 않도록 합니다.
 class ChatRequest(SearchRequest):
-    model: str | None = Field(default=None, min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._:-]+$")
+    model: str | None = Field(default=None, min_length=1, max_length=200, pattern=MODEL_PATTERN)
     history: list[Message] = Field(default_factory=list, max_length=6)
 
 class IngestRequest(BaseModel):
@@ -77,8 +78,10 @@ def create_app(settings=None, provider=None, law_api=None):
 
     @app.get('/api/status')
     def status():
-        return {'law_api_configured': bool(settings.law_oc), 'llm_configured': bool(settings.api_key),
-                'threshold': SEARCH_THRESHOLD, 'chat_model': settings.chat_model,
+        return {'law_api_configured': bool(settings.law_oc), 'llm_configured': settings.ai_configured('chat'),
+                'embedding_configured':settings.ai_configured('embedding'),
+                'chat_backend':settings.chat_backend, 'embedding_backend':settings.embedding_backend,
+                'threshold': SEARCH_THRESHOLD, 'chat_model': settings.active_chat_model,
                 'search_fusion': SEARCH_FUSION, 'laws': store.list_laws()}
 
     @app.get('/api/laws/search')
@@ -98,13 +101,16 @@ def create_app(settings=None, provider=None, law_api=None):
     def models():
         presets = ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1',
                    'gpt-5-mini', 'gpt-5', 'gpt-5.1', 'gpt-5.2', 'gpt-5.4']
+        if settings.chat_backend == 'company':
+            presets = []
         available, warning = [], ''
         try:
             available = provider.models() if hasattr(provider, 'models') else []
         except SetupError as exc:
             warning = str(exc)
-        return {'models': list(dict.fromkeys([settings.chat_model] + presets + available)),
-                'available': available, 'default': settings.chat_model, 'warning': warning}
+        return {'models': list(dict.fromkeys([settings.active_chat_model] + presets + available)),
+                'available': available, 'default': settings.active_chat_model,
+                'backend':settings.chat_backend, 'warning': warning}
 
     # 검색 API는 후보 조회용입니다. LLM 관련성 검토와 답변 생성은 채팅 API에서 수행합니다.
     @app.post('/api/search')
@@ -113,7 +119,7 @@ def create_app(settings=None, provider=None, law_api=None):
 
     # 요청마다 모델을 분리해야 동시에 접속한 사용자의 선택이 서로 영향을 주지 않습니다.
     def chat_provider(body):
-        return provider.for_model(body.model or settings.chat_model) if hasattr(provider, 'for_model') else provider
+        return provider.for_model(body.model or settings.active_chat_model) if hasattr(provider, 'for_model') else provider
 
     @app.post('/api/chat')
     def chat(body: ChatRequest):
