@@ -24,7 +24,7 @@ def test_fixed_policy_reaches_retrieval_and_returned_scores(tmp_path, monkeypatc
     app = create_app(Settings(data_dir=tmp_path), Provider(), object())
     store = app.state.store
     put(store, '합성법', [('1', '일반', '적용 범위 보호 요건'),
-                         ('2', '일반', '적용 보호와 무관한 문장')])
+                         ('2', '일반', '적용 범위 보호를 안내한다.')])
     question = '적용 범위 보호 요건'
     # 낮은 임계치로는 약한 후보도 나오므로 0.3 고정 여부를 실제 검색으로 구별합니다.
     loose = store.search_enhanced(question, Provider(), threshold=0, mode='keyword')

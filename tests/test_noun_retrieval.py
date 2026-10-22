@@ -100,11 +100,9 @@ def test_article_58_reaches_top_candidates_with_weak_embedding_and_generic_title
     hits = store.search_enhanced(QUESTION, provider, mode=mode, threshold=.3, fusion='rrf', limit=15)
     hit = next(e for e in hits if e['number'] == '제58조')
     assert '단독경보형감지기' in hit['matched_body_nouns']
-    assert hit['body_keyword_score'] > hit['body_ngram_score']
-    assert hit['weighted_score'] >= .3
+    assert hit['body_keyword_score'] == hit['body_noun_score']
+    assert hit['admission_score'] >= .3
     if mode == 'hybrid':
-        old = .8 * (.65*hit['body_semantic_score'] + .35*hit['body_ngram_score']) + .2*hit['title_ngram_score'] + .2*hit['law_name_score']
-        assert old < .3  # 기존 문자인식·약한 벡터에서는 임계치로 누락되는 사례를 재현합니다.
         assert any(e['number'] == '제59조' for e in hits)
     assert hit['matched_units'][0]['location'] == '제1호'
     assert '다만' in hit['body'] and '2. 화재탐지장치' in hit['body']

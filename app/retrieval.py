@@ -5,8 +5,13 @@ from urllib.parse import quote
 from .temporal import today_in_korea
 import sqlite_vec
 from .laws import SetupError
-from .store import grams, body_text, expanded_query
-from .keywords import NounIndex
+from .store import body_text, expanded_query
+from .keywords import NounIndex, query_terms
+
+
+# RRF에서도 제목/본문이 주된 검색 신호이며 법령명은 보조 역할만 합니다.
+RRF_WEIGHTS = {'body': .60, 'title': .30, 'law_name': .10}
+LAW_NAME_BONUS = .10
 
 
 # 현재 검색 구현입니다. 기준일에 맞는 버전에서 원질의와 재작성 질의를 함께 비교하고,
@@ -31,27 +36,10 @@ def fragments(body):
     return result
 
 
-# 문자 비교는 한글·영숫자 2글자 집합의 겹침 비율입니다. 실제 키워드 점수는
-# 아래 문자 비교와 keywords.py의 명사·복합어 IDF 일치 점수 중 큰 값을 씁니다.
-# balanced는 질의 대비 일치율뿐 아니라 짧은 제목 쪽의 일치율도 반영합니다.
-def overlap(query, text, balanced=False):
-    q, t = grams(query), grams(text)
-    coverage = len(q & t) / max(1,len(q))
-    return .5*coverage + .5*len(q & t)/max(1,len(t)) if balanced else coverage
-
-
-def content_overlap(query, text):
-    q, t = grams(query), grams(text)
-    # Reward a coherent paragraph/item match over terms scattered through a
-    # long article, without making length alone disqualify a parent article.
-    return .8*len(q&t)/max(1,len(q)) + .2*len(q&t)/max(1,len(t))
-
-
 # 법령명은 기존 제목 벡터에도 포함되어 있지만, 조문 제목과 섞인 벡터만으로는
 # '총톤수 10톤 미만 소형어선' 같은 적용 범위를 독립적으로 비교하기 어렵습니다.
 # 저장된 원래 이름을 직접 비교하므로 새 임베딩이나 검색용 생성 문서가 필요 없습니다.
-NAME_BOILERPLATE = set().union(*(grams(word) for word in
-    ('기준', '규정', '관한', '등에', '대한', '법률', '시행령', '시행규칙', '행정규칙', '요령', '지침')))
+NAME_BOILERPLATE = frozenset(('기준','규정','법률','시행령','시행규칙','행정규칙','요령','지침'))
 NAME_MEASURE = re.compile(r'(\d+(?:\.\d+)?)(킬로미터|킬로와트|미터|톤)(미만|이하|이상|초과)?')
 
 
@@ -60,32 +48,41 @@ def compact_name(value):
 
 
 def law_name_score(question, name):
-    """0~1 이름 일치율. 공백·전각을 무시하고 부분 명칭과 수치 조건을 비교합니다.
+    """0~1 이름 일치율. 명사 단위로 비교하고 수치 조건을 보존합니다.
 
     '기준' 등 공통 말만 맞는 경우는 투표하지 않습니다. '어선'·'레저'처럼
-    짧은 대상어도 점수를 주고, 일치하는 이름 조각이 늘수록 점수를 높입니다.
-    긴 질문에서도 대상어가 희석되지 않도록 법령명 쪽 포함률을 씁니다.
+    짧은 대상어도 점수를 주지만 '일반선의/범선의'의 '선의' 같은 부분 문자열은
+    세지 않습니다. 긴 질문에서 대상어가 희석되지 않도록 이름 쪽 포함률을 씁니다.
     """
     query, title = compact_name(question), compact_name(name)
     if not title:
         return 0.
-    if title in query:
-        return 1.
-    meaningful = grams(title) - NAME_BOILERPLATE
-    matched = grams(query) & meaningful
+    nouns, compounds = query_terms(question)
+    name_nouns, _ = query_terms(name)
+    meaningful = {term for term in name_nouns - NAME_BOILERPLATE if len(term) >= 2}
+    matched = (nouns | compounds) & meaningful
     if not matched:
         return 0.
-    score = len(matched) / max(1, len(meaningful))
+    if title in query:
+        return 1.
+    covered = sum(len(term) for term in matched)
+    total = sum(len(term) for term in meaningful)
     # 같은 단위의 명시된 수치·범위가 다르면 이름 일치 보너스를 낮춥니다.
     # 다른 법의 본문 검색 자체는 막지 않습니다. 숫자를 지우거나 10톤/20톤을
     # 같은 적용 범위로 취급하지 않기 위한 보조 신호입니다.
     query_measures = NAME_MEASURE.findall(query)
+    penalty = 1.
     for value, unit, bound in NAME_MEASURE.findall(title):
+        width = len(value + unit + bound)
+        total += width
         comparable = [(v, b) for v, u, b in query_measures if u == unit]
-        if comparable and not any(float(v) == float(value) and (not b or not bound or b == bound)
-                                  for v, b in comparable):
-            score *= .25
-    return score
+        if any(float(v) == float(value) and (not b or not bound or b == bound) for v,b in comparable):
+            covered += width
+        elif comparable:
+            penalty *= .25
+    # 법/기준 같은 이름의 공통 부분은 일치 가산을 만들지 않지만 이름 길이에는
+    # 남겨, '어선'만 묻는 경우와 '어선법' 전체를 명시한 경우를 구분합니다.
+    return covered / max(1,total,len(title)) * penalty
 
 
 # RRF는 원점수 대신 각 목록의 순위로 1/(k+rank)를 합산합니다.
@@ -102,7 +99,7 @@ def field_rrf(per_query, mode, exact_ids=(), constant=60, depth=50):
     """Fuse title/body retrievers, then combine law-name, title and body ranks.
 
     A rewrite adds a retrieval path, not another vote at the final field level.
-    Missing field hits contribute zero; the maximum is 3 / (constant + 1).
+    Missing field hits contribute zero; the maximum is 1 / (constant + 1).
     Law names are ranked once per name; all its candidate articles share the
     rank. Article count/IDs must not arbitrarily determine the law-name vote.
     """
@@ -124,7 +121,10 @@ def field_rrf(per_query, mode, exact_ids=(), constant=60, depth=50):
         ranking = list(dict.fromkeys([*exact_ids, *ordered]))
         rankings.append(ranking)
         ranks[field] = {key: rank for rank, key in enumerate(ranking, 1)}
-    combined = fuse(rankings, constant)
+    combined = {}
+    for field, ranking in zip(fields,rankings):
+        for key, score in fuse([ranking],constant).items():
+            combined[key] = combined.get(key,0.) + RRF_WEIGHTS[field] * score
     names, members = {}, {}
     for scores in per_query:
         for score in scores:
@@ -137,7 +137,7 @@ def field_rrf(per_query, mode, exact_ids=(), constant=60, depth=50):
     for rank, name in enumerate(sorted(names, key=lambda n: (-names[n], n))[:depth], 1):
         for key in members[name]:
             ranks['law_name'][key] = rank
-            combined[key] = combined.get(key, 0.) + 1/(constant + rank)
+            combined[key] = combined.get(key, 0.) + RRF_WEIGHTS['law_name']/(constant + rank)
     return combined, ranks
 
 
@@ -174,16 +174,18 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
     queries = list(dict.fromkeys([question, *variants]))
     fusion_metadata = {'queries': queries, 'threshold_basis': 'admission_score',
                        'rrf_constant': 60, 'rrf_fields': ['law_name', 'title', 'body'],
-                       'rrf_strategy': 'field_hierarchical', 'rrf_max_score': 3/61,
-                       'law_name_weight': .20, 'law_name_method': 'partial_keyword_coverage',
-                       'keyword_method': 'noun_idf_with_ngram_fallback',
+                       'rrf_strategy': 'field_hierarchical', 'rrf_max_score': 1/61,
+                       'rrf_field_weights': dict(RRF_WEIGHTS),
+                       'law_name_weight': LAW_NAME_BONUS, 'law_name_method': 'noun_coverage',
+                       'keyword_method': 'noun_idf',
                        'candidate_selection': 'rrf_with_original_body_noun_reserve'}
     if diagnostics is not None:
         diagnostics.update(**fusion_metadata, threshold=threshold, limit=limit, candidates=[])
     # 이름 비교는 원질의와 법령당 한 번만 수행합니다. rewrite가 만든 법령명으로
     # 특정 법을 밀어 올리지 않으며, 이름이 안 맞는 법도 제목·본문으로 계속 검색합니다.
     name_scores = {law['name']: law_name_score(question, law['name']) for law in selected}
-    explicit_names = {name for name in name_scores if compact_name(name) in compact_name(question)}
+    explicit_names = {name for name, score in name_scores.items()
+                      if score == 1 and compact_name(name) in compact_name(question)}
     rows = []
     with store.connect() as db:
         for law in selected:
@@ -225,16 +227,12 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
                 body_nouns = noun_plan.matches(position, 'body')
                 title_noun_score = noun_plan.score(title_nouns)
                 body_noun_score = noun_plan.score(body_nouns)
-                title_ngram = overlap(clean,row['title'],True)
-                title = max(title_ngram, title_noun_score)
+                title = title_noun_score
                 units = fragments(row['body']) if row['number'].startswith('제') else []
                 # A focused item can match even when its parent has a generic heading.
-                matches = [{**u,'ngram':content_overlap(clean,u['text'])} for u in units]
-                for match in matches:
-                    match['score'] = max(match['ngram'], noun_plan.score_text(match['text']))
+                matches = [{**u,'score':noun_plan.score_text(u['text'])} for u in units]
                 matches.sort(key=lambda u:-u['score'])
-                lexical_ngram = max([content_overlap(clean,bodies[position])] + [m['ngram'] for m in matches])
-                lexical = max(lexical_ngram, body_noun_score)
+                lexical = body_noun_score
                 semantic, title_semantic = (0., 0.)
                 if vector:
                     distances = db.execute('SELECT 1-vec_distance_cosine(?,?), 1-vec_distance_cosine(?,?)',
@@ -244,24 +242,23 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
                 law = name_scores[row['law_name']]
                 exact = row['law_name'] in explicit_names and any(re.sub(r'\s+','',m.group()) == row['number']
                     for m in re.finditer(r'제\s*\d+\s*조(?:의\s*\d+)?',question))
-                # 이름 일치율은 최대 0.20을 더합니다. 기존 본문·제목 점수를 낮추지
+                # 이름 일치율은 최대 0.10을 더합니다. 기존 본문·제목 점수를 낮추지
                 # 않으므로 다른 법의 관련 조문도 계속 후보가 됩니다. 이름만 맞아도
                 # 본문 최소 적합도(0.20)를 통과하지 못하면 후보로 사용하지 않습니다.
-                quality = min(1., .80*content + .20*title + .20*law)
+                quality = min(1., .80*content + .20*title + LAW_NAME_BONUS*law)
                 if exact:
                     quality = max(quality,.95)
                 # 정확한 본문 명사가 약한 임베딩의 35% 가중치에 희석되지 않게
                 # 독립적인 명사 검색 경로도 허용합니다. 원질의의 희소 핵심어가
                 # 본문에 실제로 있어야 하며, 이름/제목만으로 이 경로를 타지 않습니다.
                 focus = noun_plan.focus_score(body_nouns) if query == question else 0.
-                noun_quality = min(1., .8*body_noun_score + .2*title_noun_score + .2*law) if focus else 0.
+                noun_quality = min(1., .8*body_noun_score + .2*title_noun_score + LAW_NAME_BONUS*law) if focus else 0.
                 noun_eligible = noun_quality >= threshold and body_noun_score >= .20
                 admission = max(quality, noun_quality)
                 eligible = (quality >= threshold and (exact or content >= .20)) or noun_eligible
                 scored.append({'row':row, 'quality':quality,
                     'semantic':semantic, 'title':title, 'title_semantic':title_semantic,
                     'body':content, 'lexical':lexical,
-                    'body_ngram':lexical_ngram, 'title_ngram':title_ngram,
                     'body_noun_score':body_noun_score, 'title_noun_score':title_noun_score,
                     'body_nouns':body_nouns, 'title_nouns':title_nouns,
                     'law':law, 'exact':bool(exact), 'query':query, 'eligible':eligible,
@@ -276,7 +273,7 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
     # 임계치·본문 조건을 통과한 후보들 안에서만 순위를 결합합니다.
     rrf, field_ranks = field_rrf([[s for s in scores if s['row']['id'] in eligible_ids]
                                 for scores in per_query], mode, exact_ids)
-    # RRF 원점수를 법령명·제목·본문 세 필드의 최대값 3/(60+1)로 나눕니다.
+    # RRF 원점수를 세 필드 가중치 합의 최대값 (0.6+0.3+0.1)/(60+1)로 나눕니다.
     # 이는 이론상 최대값 대비 비율이며 법적 정확도나 답변 정답 확률이 아닙니다.
     normalizer = fusion_metadata['rrf_max_score']
     result = []
@@ -296,13 +293,13 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
             rrf_score=round(rrf.get(row['id'],0.)/normalizer,6), title_score=round(best['title'],4),
             body_score=round(best['body'],4), law_name_score=round(best['law'],4),
             body_keyword_score=round(best['lexical'],4), body_semantic_score=round(best['semantic'],4),
-            body_ngram_score=round(best['body_ngram'],4), title_ngram_score=round(best['title_ngram'],4),
             body_noun_score=round(best['body_noun_score'],4), title_noun_score=round(best['title_noun_score'],4),
             matched_body_nouns=best['body_nouns'], matched_title_nouns=best['title_nouns'],
             keyword_method=fusion_metadata['keyword_method'],
             title_keyword_score=round(best['title'],4), exact_identifier=best['exact'],
             title_semantic_score=round(best['title_semantic'],4),
             rrf_raw_score=rrf.get(row['id'],0.), rrf_max_score=normalizer,
+            rrf_field_weights=dict(RRF_WEIGHTS),
             rrf_field_ranks={field:ranks.get(row['id']) for field,ranks in field_ranks.items()},
             matched_query=best['query'], matched_units=best['matches'], context_restored=True,
             retrieval_queries=[s['query'] for s in observations if s['eligible']],

@@ -232,9 +232,11 @@ def test_coherent_item_match_ranks_above_scattered_words(tmp_path):
     store=Store(tmp_path)
     put(store,'합성법',[('1','일반','① 제출 절차\n1. 영수증 사본\n2. '+ '무관한 내용 '*100),
                          ('2','일반','① 영수증\n'+ '무관한 내용 '*100 +'\n② 사본')])
-    result=store.search_enhanced('영수증 사본',FakeProvider(),mode='keyword')
+    trace = {}
+    result=store.search_enhanced('영수증 사본',FakeProvider(),mode='keyword',diagnostics=trace)
     assert result[0]['number']=='제1조'
-    assert result[0]['body_keyword_score']>result[1]['body_keyword_score']
+    scores = {r['number']:r['body_keyword_score'] for r in trace['candidates']}
+    assert scores['제1조'] > scores['제2조']
 
 
 def test_reverse_provenance_and_declared_alias_use_actual_source(tmp_path):

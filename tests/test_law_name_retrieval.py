@@ -83,9 +83,8 @@ def test_partial_name_rescues_specific_rule_without_losing_general_rule(tmp_path
     results = store.search_enhanced(QUESTION, provider, threshold=.4, fusion=fusion)
     assert {r['law_name'] for r in results} == {SPECIFIC, GENERAL, SPECIFIC.replace('10톤', '20톤')}
     specific = next(r for r in results if r['law_name'] == SPECIFIC)
-    # 문자 겹침만 쓰던 이전 점수는 임계치 미만입니다. 이제 명사 일치도 함께 반영합니다.
-    old_quality = .8 * (.65*specific['body_semantic_score'] + .35*specific['body_ngram_score']) + .2*specific['title_ngram_score']
-    assert old_quality < .4 <= specific['weighted_score']
+    assert .4 <= specific['admission_score']
+    assert specific['body_keyword_score'] == specific['body_noun_score']
     wrong = next(r for r in results if r['law_name'] == SPECIFIC.replace('10톤', '20톤'))
     assert wrong['weighted_score'] < specific['weighted_score']
     assert specific['law_name_score'] > 0 and specific['rrf_field_ranks']['law_name'] == 1
@@ -105,7 +104,7 @@ def test_name_rrf_ranks_laws_once_and_keeps_other_laws_despite_many_articles():
         score['row']['law_name'] = 'A 규칙' if score['row']['id'].startswith('a') else 'B 규칙'
     fused, ranks = field_rrf([scores], 'keyword')
     assert {ranks['law_name'][f'a{i:03}'] for i in range(70)} == {1}
-    assert ranks['law_name']['b'] == 2 and fused['b'] == pytest.approx(1/62)
+    assert ranks['law_name']['b'] == 2 and fused['b'] == pytest.approx(.1/62)
     assert field_rrf([scores, scores], 'keyword') == (fused, ranks)
 
 
@@ -127,10 +126,10 @@ def test_keyword_mode_and_comparison_do_not_require_new_embeddings(tmp_path):
     assert {r['id'] for r in result['rrf']} == {r['id'] for r in result['weighted']}
     assert result['rrf_fields'] == ['law_name', 'title', 'body']
     for hit in result['rrf']:
-        raw = sum(1/(60+rank) for rank in hit['rrf_field_ranks'].values() if rank)
+        raw = sum(hit['rrf_field_weights'][field]/(60+rank) for field,rank in hit['rrf_field_ranks'].items() if rank)
         assert hit['rrf_raw_score'] == pytest.approx(raw)
-        assert hit['rrf_max_score'] == pytest.approx(3/61)
-        assert hit['score'] == pytest.approx(raw/(3/61), abs=1e-6)
+        assert hit['rrf_max_score'] == pytest.approx(1/61)
+        assert hit['score'] == pytest.approx(raw/(1/61), abs=1e-6)
 
 
 def test_both_rules_reach_llm_review_and_sources(tmp_path):
