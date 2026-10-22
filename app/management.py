@@ -172,7 +172,7 @@ class Management:
                         (member['mst'], member['effective'], now(), json.dumps(family, ensure_ascii=False)))
         return {'plan_id': plan_id, **plan}
 
-    def queue_plan(self, plan_id):
+    def queue_plan(self, plan_id, *, skip_sources=()):
         with self.store.connect() as db:
             row = db.execute('SELECT * FROM collection_plans WHERE id=?', (plan_id,)).fetchone()
         if row is None or datetime.fromisoformat(row['created_at']) < datetime.now(timezone.utc) - timedelta(hours=1):
@@ -180,7 +180,8 @@ class Management:
         plan = json.loads(row['payload'])
         # 서버가 만든 계획만 확장된 크기를 허용합니다. 각 항목은 다시 검증하고,
         # 실제 중복 여부는 queue의 쓰기 트랜잭션 안에서 재확인합니다.
-        request = CollectionInput.model_construct(items=[CollectionItem(**r) for r in plan['items']], keyword_only=False)
+        request = CollectionInput.model_construct(items=[CollectionItem(**r) for r in plan['items']
+            if (r['kind'], r['mst'], r['effective']) not in skip_sources], keyword_only=False)
         result = self.queue(request)
         with self.store.connect() as db:
             db.execute('UPDATE collection_plans SET batch=? WHERE id=?', (result['batch'], plan_id))
