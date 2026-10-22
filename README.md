@@ -57,8 +57,8 @@ New-NetFirewallRule -DisplayName "LawRAG LAN 8001" -Direction Inbound -Action Al
 | `EMBEDDING_MODEL` | `text-embedding-3-large` |
 | `CHAT_MODEL` | `gpt-4.1` (채팅창의 초기 선택값) |
 | `SEARCH_CANDIDATE_LIMIT` | 임계치 통과 검색 후보의 검토 수 `15`, 최대 `15`. 기존 `.env`가 20 이상이어도 상한 적용 |
-| `SEARCH_THRESHOLD` | 최종 근거 점수 하한, `0.48` |
-| `SEARCH_FUSION` | 기본 순위 결합 `weighted`, 비교용 `rrf` |
+| `SEARCH_THRESHOLD` | 기본 근거 임계치 `0.4`. 환경변수나 `.env`에 지정한 값이 있으면 우선 적용 |
+| `SEARCH_FUSION` | 기본 순위 결합 `rrf`. 환경변수나 `.env`에 `weighted` 또는 `rrf`를 지정하면 우선 적용 |
 | `REFERENCE_LIMIT` | 한 차례 관계 확장 시 추가 문서 최대 `40` (상한 80) |
 | `CONTEXT_MAX_CHARS` | 최종 근거 본문 예산 `60000`자. 조 중간을 자르지 않고 초과 조는 누락 목록에 기록 |
 | `DATA_DIR` | 기본 프로젝트 `data/` |
