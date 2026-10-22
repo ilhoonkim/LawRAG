@@ -81,7 +81,7 @@ def test_rrf_same_candidate_pool_deduplicates_and_shares_embedding_call(tmp_path
     comparison=store.search_enhanced('적용 범위',provider,variants=['검사 서류'],compare=True,threshold=.2)
     assert provider.queries==[['적용 범위','검사 서류']]
     assert {r['id'] for r in comparison['weighted']}=={r['id'] for r in comparison['rrf']}
-    assert comparison['threshold_basis']=='weighted_score'
+    assert comparison['threshold_basis']=='admission_score'
     assert [r['score'] for r in comparison['rrf']]==sorted([r['score'] for r in comparison['rrf']],reverse=True)
     assert fuse([['a','a','b'],['b','c']])['b']==pytest.approx(1/62+1/61)
 

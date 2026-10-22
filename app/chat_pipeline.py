@@ -2,6 +2,7 @@
 import re
 from .config import SEARCH_FUSION, SEARCH_THRESHOLD
 from .temporal import resolve_date
+from .retrieval import select_candidates
 
 # 채팅의 전체 흐름: 기준일 확정 → 원질의+재작성 검색 → 후보 검토 → 연결 조문 확장
 # → 연결 조문 검토 → 근거 충분성 점검 → 필요 시 한 번 더 검색 → 확보한 본문으로 답변 생성.
@@ -26,7 +27,7 @@ def review_limit(settings):
 
 # 검색 단독 API는 참조 확장까지 수행할 수 있습니다. 채팅은 expand=False로 호출한 뒤
 # 관련성 검토를 통과한 조문에 대해서만 참조를 확장합니다. 법령명 입력은 필수가 아닙니다.
-def retrieve(store, provider, settings, body, *, variants=None, limit=None, expand=True):
+def retrieve(store, provider, settings, body, *, variants=None, limit=None, expand=True, diagnostics=None):
     cutoff, clarification = resolve_date(body.question, body.as_of)
     if clarification:
         return {'evidence': [], 'clarification': clarification, 'as_of': None, 'missing_versions': []}
@@ -35,7 +36,8 @@ def retrieve(store, provider, settings, body, *, variants=None, limit=None, expa
     missing = [r for r in timeline['missing'] if r['name'] in named]
     evidence = store.search_enhanced(body.question,provider,variants=variants or (),cutoff=cutoff,
         threshold=SEARCH_THRESHOLD, limit=limit or body.limit,
-        mode=body.mode,fusion=SEARCH_FUSION)
+        mode=body.mode,fusion=SEARCH_FUSION,
+        **({'diagnostics':diagnostics} if diagnostics is not None else {}))
     evidence, missing_refs = store.expand_context(evidence,cutoff=cutoff,question=body.question,
         limit=min(80,max(0,settings.reference_limit))) if expand else (evidence,[])
     return {'evidence': evidence, 'missing_references': missing_refs, 'as_of': cutoff.isoformat(),
@@ -74,14 +76,14 @@ def filter_once(provider, question, candidates, checked, rejected):
 
 def review(store, provider, settings, question, candidates, cutoff, rejected, *, checked=None, progress=lambda stage: None):
     checked = checked if checked is not None else {}
-    # Search already applies the content threshold. Review only its highest
-    # ranked hits, never references carrying an inherited score.
+    # 검색 단계의 임계치와 원질의 본문 핵심어 보호를 추가 검색 병합 후에도
+    # 유지합니다. 참조에서 물려받은 점수는 직접 검색 후보에 사용하지 않습니다.
     ordered = sorted((e for e in candidates if not e.get('relation') and source_key(e) not in rejected),
                      key=lambda e:(-e.get('score',0),source_key(e)))
     unique = {}
     for e in ordered:
         unique.setdefault(source_key(e),e)
-    selected = list(unique.values())[:review_limit(settings)]
+    selected = select_candidates(list(unique.values()),review_limit(settings))
     reviewed = filter_once(provider, question, selected, checked, rejected)
     # 탈락 기록은 추가 검색에도 유지됩니다. 같은 후보가 연결 조문으로 우회 복귀하지 못합니다.
     rejected.update({source_key(e) for e in selected} - {source_key(e) for e in reviewed})
@@ -123,7 +125,7 @@ def review(store, provider, settings, question, candidates, cutoff, rejected, *,
     return evidence,missing+omitted+deferred
 
 
-def run_chat(store, provider, settings, body, progress=lambda stage: None):
+def run_chat(store, provider, settings, body, progress=lambda stage: None, *, diagnostics=None):
     cutoff, clarification = resolve_date(body.question, body.as_of)
     if clarification:
         return {'evidence': [], 'answer': clarification, 'clarification': clarification,
@@ -134,8 +136,11 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
     # rewrite는 원질의를 대체하지 않습니다. 검색은 둘 다 사용하고 검토·답변은 원질의로 합니다.
     rewritten = provider.rewrite_question(body.question)
     progress('search')
+    search_trace = {} if diagnostics is not None else None
+    if diagnostics is not None:
+        diagnostics.update(searches=[search_trace], review_outcomes=[])
     result = retrieve(store,provider,settings,search_body,variants=[rewritten],
-                      limit=review_limit(settings),expand=False)
+                      limit=review_limit(settings),expand=False,diagnostics=search_trace)
     candidates, rejected, checked = result['evidence'], set(), {}
     progress('review')
     evidence, missing = review(store,provider,settings,body.question,candidates,cutoff,rejected,checked=checked,progress=progress)
@@ -159,8 +164,11 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
     if not assessment['sufficient'] and extra_queries and (assessment['missing_issues'] or (not evidence and not assessment['missing_facts'])):
         rounds = 1
         progress('additional_search')
+        search_trace = {} if diagnostics is not None else None
+        if diagnostics is not None:
+            diagnostics['searches'].append(search_trace)
         additional = retrieve(store,provider,settings,search_body,variants=extra_queries,
-            limit=review_limit(settings),expand=False)['evidence']
+            limit=review_limit(settings),expand=False,diagnostics=search_trace)['evidence']
         candidates = list({source_key(e):e for e in candidates+additional}.values())
         merged = {source_key(e):e for e in evidence if source_key(e) not in rejected}
         for e in additional:
@@ -180,6 +188,15 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
     # 상하위 연결은 출처에 포함하고 일반 연결 문맥만 숨깁니다.
     # approved_count에는 검토를 통과한 후보에서 확장한 연결 문맥도 포함됩니다.
     visible_evidence = [e for e in evidence if not e.get('relation') or e.get('include_in_sources')]
+    if diagnostics is not None:
+        visible_keys = {source_key(e) for e in visible_evidence}
+        context_keys = {source_key(e) for e in evidence}
+        diagnostics['review_outcomes'] = [
+            {'version':key[0], 'law_name':key[1], 'number':key[2],
+             'stage':('llm_rejected' if key in rejected else 'visible_source' if key in visible_keys
+                      else 'llm_context_only' if key in context_keys else 'approved_but_omitted')}
+            for key in sorted(set(checked) | rejected)]
+        diagnostics['missing_references'] = missing
     result.update(evidence=visible_evidence,missing_references=missing,rewritten_query=rewritten,
         original_question=body.question,candidate_count=len(candidates),approved_count=len(evidence),
         linked_context_count=len(evidence)-len(visible_evidence),

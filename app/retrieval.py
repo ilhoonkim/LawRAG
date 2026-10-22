@@ -119,7 +119,9 @@ def field_rrf(per_query, mode, exact_ids=(), constant=60, depth=50):
                 lists.append([s['row']['id'] for s in ordered if s[signal] > 0][:depth])
         combined = fuse(lists, constant)
         ordered = sorted(combined, key=lambda key: (-combined[key], key))
-        ranking = list(dict.fromkeys([*exact_ids, *ordered]))[:depth]
+        # 각 검색기의 상위 depth 합집합을 보존합니다. 결합 뒤 다시 depth로
+        # 자르면 키워드에서 1위여도 벡터 목록 밖이라는 이유로 사라집니다.
+        ranking = list(dict.fromkeys([*exact_ids, *ordered]))
         rankings.append(ranking)
         ranks[field] = {key: rank for rank, key in enumerate(ranking, 1)}
     combined = fuse(rankings, constant)
@@ -139,18 +141,45 @@ def field_rrf(per_query, mode, exact_ids=(), constant=60, depth=50):
     return combined, ranks
 
 
+def select_candidates(rows, limit):
+    """RRF 순서를 유지하되 최대 1/3은 원질의의 핵심 본문 일치에 배정합니다.
+
+    총 검토 수는 늘리지 않습니다. 임계치를 통과한 후보만 입력하며, 나머지는
+    RRF로 채웁니다. 추가 검색 결과를 합칠 때도 같은 규칙을 사용합니다.
+    """
+    key = lambda row: (-row.get('score', 0), -row.get('weighted_score', 0),
+                       row.get('id', ''), row.get('version', ''), row.get('number', ''))
+    ordered = sorted(rows, key=key)
+    # 사용자가 직접 법령+조번호를 지정한 조회는 키워드 보호보다 먼저 보존합니다.
+    chosen = {(r['version'], r['number']): r for r in ordered if r.get('exact_identifier')}
+    focused = sorted((r for r in ordered if r.get('body_focus_score', 0) > 0),
+                     key=lambda r: (-r['body_focus_score'], *key(r)))
+    for row in focused[:max(1, limit // 3)]:
+        if len(chosen) >= limit:
+            break
+        chosen.setdefault((row['version'], row['number']), row)
+    for row in ordered:
+        if len(chosen) >= limit:
+            break
+        chosen.setdefault((row['version'], row['number']), row)
+    return sorted(chosen.values(), key=key)[:limit]
+
+
 def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48,
-           limit=20, mode='hybrid', fusion='weighted', compare=False):
+           limit=20, mode='hybrid', fusion='weighted', compare=False, diagnostics=None):
     if fusion not in ('weighted','rrf') or not 0 <= threshold <= 1:
         raise ValueError('검색 결합 방식 또는 임계치가 올바르지 않습니다.')
     cutoff = cutoff or today_in_korea()
     selected = store.temporal_versions(cutoff)['versions']
     queries = list(dict.fromkeys([question, *variants]))
-    fusion_metadata = {'queries': queries, 'threshold_basis': 'weighted_score',
+    fusion_metadata = {'queries': queries, 'threshold_basis': 'admission_score',
                        'rrf_constant': 60, 'rrf_fields': ['law_name', 'title', 'body'],
                        'rrf_strategy': 'field_hierarchical', 'rrf_max_score': 3/61,
                        'law_name_weight': .20, 'law_name_method': 'partial_keyword_coverage',
-                       'keyword_method': 'noun_idf_with_ngram_fallback'}
+                       'keyword_method': 'noun_idf_with_ngram_fallback',
+                       'candidate_selection': 'rrf_with_original_body_noun_reserve'}
+    if diagnostics is not None:
+        diagnostics.update(**fusion_metadata, threshold=threshold, limit=limit, candidates=[])
     # 이름 비교는 원질의와 법령당 한 번만 수행합니다. rewrite가 만든 법령명으로
     # 특정 법을 밀어 올리지 않으며, 이름이 안 맞는 법도 제목·본문으로 계속 검색합니다.
     name_scores = {law['name']: law_name_score(question, law['name']) for law in selected}
@@ -221,9 +250,14 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
                 quality = min(1., .80*content + .20*title + .20*law)
                 if exact:
                     quality = max(quality,.95)
-                # 통과 여부와 정렬은 구분합니다. RRF를 선택해도 순위만 높다는 이유로
-                # 무관한 후보를 통과시키지 않으며, 원문의 임계치를 먼저 요구합니다.
-                eligible = quality >= threshold and (exact or content >= .20)
+                # 정확한 본문 명사가 약한 임베딩의 35% 가중치에 희석되지 않게
+                # 독립적인 명사 검색 경로도 허용합니다. 원질의의 희소 핵심어가
+                # 본문에 실제로 있어야 하며, 이름/제목만으로 이 경로를 타지 않습니다.
+                focus = noun_plan.focus_score(body_nouns) if query == question else 0.
+                noun_quality = min(1., .8*body_noun_score + .2*title_noun_score + .2*law) if focus else 0.
+                noun_eligible = noun_quality >= threshold and body_noun_score >= .20
+                admission = max(quality, noun_quality)
+                eligible = (quality >= threshold and (exact or content >= .20)) or noun_eligible
                 scored.append({'row':row, 'quality':quality,
                     'semantic':semantic, 'title':title, 'title_semantic':title_semantic,
                     'body':content, 'lexical':lexical,
@@ -231,6 +265,9 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
                     'body_noun_score':body_noun_score, 'title_noun_score':title_noun_score,
                     'body_nouns':body_nouns, 'title_nouns':title_nouns,
                     'law':law, 'exact':bool(exact), 'query':query, 'eligible':eligible,
+                    'admission':admission, 'noun_quality':noun_quality,
+                    'body_focus_score':focus if noun_eligible else 0.,
+                    'focus_nouns':sorted(noun_plan.focus_terms.intersection(body_nouns)) if query == question else [],
                     'matches':[{k:m[k] for k in ('location','text','start','end')} for m in matches[:3] if m['score'] > 0]})
             per_query.append(scored)
     exact_ids = [s['row']['id'] for s in per_query[0] if s['exact']]
@@ -248,12 +285,14 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
         # 통과한 검색 경로 중 최고값을 사용합니다. 제목만 맞는 경로가 본문까지
         # 조건을 통과한 다른 질의의 결과를 덮어쓰지 않게 합니다.
         best = max(observations,key=lambda s:(s['eligible'],s['quality']))
-        if not best['eligible']:
-            continue
-        if row['id'] not in rrf:
+        if diagnostics is None and (not best['eligible'] or row['id'] not in rrf):
             continue
         out = {k:v for k,v in row.items() if k not in ('vector','title_vector','model')}
         out.update(score=round(best['quality'],4), weighted_score=round(best['quality'],4),
+            admission_score=round(max(s['admission'] for s in observations),4),
+            noun_admission_score=round(observations[0]['noun_quality'],4),
+            body_focus_score=round(observations[0]['body_focus_score'],4),
+            matched_focus_nouns=observations[0]['focus_nouns'],
             rrf_score=round(rrf.get(row['id'],0.)/normalizer,6), title_score=round(best['title'],4),
             body_score=round(best['body'],4), law_name_score=round(best['law'],4),
             body_keyword_score=round(best['lexical'],4), body_semantic_score=round(best['semantic'],4),
@@ -263,17 +302,38 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
             keyword_method=fusion_metadata['keyword_method'],
             title_keyword_score=round(best['title'],4), exact_identifier=best['exact'],
             title_semantic_score=round(best['title_semantic'],4),
-            rrf_raw_score=rrf[row['id']], rrf_max_score=normalizer,
+            rrf_raw_score=rrf.get(row['id'],0.), rrf_max_score=normalizer,
             rrf_field_ranks={field:ranks.get(row['id']) for field,ranks in field_ranks.items()},
             matched_query=best['query'], matched_units=best['matches'], context_restored=True,
             retrieval_queries=[s['query'] for s in observations if s['eligible']],
             html_url='/documents/'+row['version']+'.html?as_of='+cutoff.isoformat()+'#'+quote(row['section_id'],safe=''))
-        result.append(out)
+        if diagnostics is not None:
+            diagnostic = {k:v for k,v in out.items() if k not in
+                          ('body','matched_units','reference_titles','section_id','position')}
+            diagnostic['eligible'] = best['eligible']
+            diagnostic['stage'] = ('below_threshold' if not best['eligible'] and max(s['admission'] for s in observations) < threshold
+                                   else 'below_body_minimum' if not best['eligible']
+                                   else 'outside_field_pool' if row['id'] not in rrf
+                                   else 'outside_candidate_limit')
+            diagnostics['candidates'].append(diagnostic)
+        if best['eligible'] and row['id'] in rrf:
+            result.append(out)
     # UI는 계산 방식과 무관하게 score를 '관련도 점수'로 표시합니다.
     # compare도 같은 후보·같은 계산 결과에서 정렬 방식만 달리해 비교합니다.
     def ranked(method):
-        ordered = sorted(result,key=lambda r:(-r[method+'_score'],-r['weighted_score'],r['id']))[:limit]
-        return [{**r,'score':r[method+'_score'],'fusion':method} for r in ordered]
+        ordered = sorted(result,key=lambda r:(-r[method+'_score'],-r['weighted_score'],r['id']))
+        ranked_rows = [{**r,'score':r[method+'_score'],'fusion':method,'retrieval_rank':i}
+                       for i,r in enumerate(ordered,1)]
+        return select_candidates(ranked_rows,limit) if method == 'rrf' else ranked_rows[:limit]
+    selected_rows = ranked(fusion)
+    if diagnostics is not None:
+        selected_ids = {row['id'] for row in selected_rows}
+        ranks = {row['id']:i for i,row in enumerate(sorted(result,
+                 key=lambda r:(-r[fusion+'_score'],-r['weighted_score'],r['id'])),1)}
+        for diagnostic in diagnostics['candidates']:
+            diagnostic['retrieval_rank'] = ranks.get(diagnostic['id'])
+            if diagnostic['id'] in selected_ids:
+                diagnostic['stage'] = 'selected'
     if compare:
         return {'weighted':ranked('weighted'),'rrf':ranked('rrf'), **fusion_metadata}
-    return ranked(fusion)
+    return selected_rows

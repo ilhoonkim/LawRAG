@@ -17,7 +17,7 @@ from .laws import SetupError
 # 수치·부정·시점 조건은 원질의, 기존 문자 비교, 임베딩, LLM 입력에 그대로 남습니다.
 STOP_NOUNS = frozenset('기준 규정 사항 내용 관련 경우 방법 여부 무엇 언제 얼마 몇 '
                        '년도 이후 이전 이상 이하 미만 초과 법 법률 시행령 시행규칙 '
-                       '행정규칙 해당 다음 각 호 조 항 것 수 등 때'.split())
+                       '행정규칙 해당 다음 각 호 조 항 것 수 등 때 영 이 그 저'.split())
 NOUN_TAGS = frozenset(('NNG', 'NNP', 'SL'))
 _analyzer = None
 _analyzer_lock = Lock()
@@ -47,8 +47,12 @@ def query_terms(query):
     for token in tokens:
         form = normalize(token.form)
         is_noun = token.tag in NOUN_TAGS and form not in STOP_NOUNS
+        # '의장수'의 수처럼 앞 명사에 붙은 구성 음절은 독립 검색어에서만
+        # 제외합니다. 여기서 run까지 지우면 전문 복합 명칭이 손실됩니다.
+        component = (token.tag in NOUN_TAGS and form in STOP_NOUNS and bool(run)
+                     and run[-1].start + run[-1].len == token.start)
         suffix = token.tag == 'XSN' and bool(run)
-        if not (is_noun or suffix):
+        if not (is_noun or component or suffix):
             run = []
             continue
         if run:
@@ -56,7 +60,8 @@ def query_terms(query):
             if query[end:token.start].strip():
                 run = []
         run = (run + [token])[-6:]
-        if is_noun and len(form) >= 2:
+        # 닻·쇠 등 한 글자 실질 명사도 법령 검색에서는 유효합니다.
+        if is_noun and form:
             nouns.add(form)
         # 복합어를 통째로 보존하되 조사·동사·문장부호를 건너뛰어 만들지 않습니다.
         for start in range(len(run) - 1):
@@ -109,6 +114,15 @@ class NounPlan:
         self.weights = weights
         self.total = sum(weights.values())
         self.peak = max(weights.values(), default=0)
+        # 실제 자료에서 확인되는 드문 핵심어만 후보 보호에 사용합니다.
+        # 질문에만 있는 단어는 일반 점수의 분모에 남지만 이 목록을 지배하지
+        # 않습니다. 법령명만 맞는 후보는 본문 일치가 없어 보호되지 않습니다.
+        observed = {term: weight for term, weight in weights.items()
+                    if any(index.occurrences(term))}
+        peak = max(observed.values(), default=0)
+        self.focus_terms = {term for term, weight in observed.items()
+                            if weight >= .5 * peak
+                            and len(set().union(*index.occurrences(term))) <= max(3, index.count * .1)}
 
     def matches(self, position, field):
         offset = 0 if field == 'title' else 1
@@ -126,3 +140,7 @@ class NounPlan:
     def score_text(self, text):
         compact = normalize(text)
         return self.score([term for term in self.weights if term in compact])
+
+    def focus_score(self, matches):
+        matched = self.focus_terms.intersection(matches)
+        return self.score(matches) if matched else 0.
