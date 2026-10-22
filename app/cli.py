@@ -1,7 +1,7 @@
 """python -m app.cli search-laws / ingest / search"""
 import argparse
 import json
-from .config import Settings
+from .config import Settings, SEARCH_THRESHOLD
 from .laws import LawAPI, SetupError
 from .temporal import resolve_date
 from .provider import Provider
@@ -36,7 +36,7 @@ def main():
                 parser.error(clarification)
             result = store.search_enhanced(args.question,provider,cutoff=cutoff,
                 variants=[args.rewrite] if args.rewrite else [],
-                threshold=settings.threshold if args.threshold is None else args.threshold,
+                threshold=SEARCH_THRESHOLD if args.threshold is None else args.threshold,
                 mode=args.mode,fusion=args.fusion,compare=args.compare)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except (ValueError,SetupError) as exc:

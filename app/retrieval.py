@@ -6,6 +6,7 @@ from .temporal import today_in_korea
 import sqlite_vec
 from .laws import SetupError
 from .store import grams, body_text, expanded_query
+from .keywords import NounIndex
 
 
 # 현재 검색 구현입니다. 기준일에 맞는 버전에서 원질의와 재작성 질의를 함께 비교하고,
@@ -30,7 +31,8 @@ def fragments(body):
     return result
 
 
-# 키워드 비교는 BM25가 아니라 한글·영숫자 2글자 집합의 겹침 비율입니다.
+# 문자 비교는 한글·영숫자 2글자 집합의 겹침 비율입니다. 실제 키워드 점수는
+# 아래 문자 비교와 keywords.py의 명사·복합어 IDF 일치 점수 중 큰 값을 씁니다.
 # balanced는 질의 대비 일치율뿐 아니라 짧은 제목 쪽의 일치율도 반영합니다.
 def overlap(query, text, balanced=False):
     q, t = grams(query), grams(text)
@@ -147,7 +149,8 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
     fusion_metadata = {'queries': queries, 'threshold_basis': 'weighted_score',
                        'rrf_constant': 60, 'rrf_fields': ['law_name', 'title', 'body'],
                        'rrf_strategy': 'field_hierarchical', 'rrf_max_score': 3/61,
-                       'law_name_weight': .20, 'law_name_method': 'partial_keyword_coverage'}
+                       'law_name_weight': .20, 'law_name_method': 'partial_keyword_coverage',
+                       'keyword_method': 'noun_idf_with_ngram_fallback'}
     # 이름 비교는 원질의와 법령당 한 번만 수행합니다. rewrite가 만든 법령명으로
     # 특정 법을 밀어 올리지 않으며, 이름이 안 맞는 법도 제목·본문으로 계속 검색합니다.
     name_scores = {law['name']: law_name_score(question, law['name']) for law in selected}
@@ -166,6 +169,8 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
                 rows.append(row)
         if not rows:
             return {'weighted':[], 'rrf':[], **fusion_metadata} if compare else []
+        bodies = [body_text(row) for row in rows]
+        noun_index = NounIndex([row['title'] for row in rows], bodies)
         # 제목·본문 벡터는 동일 모델/차원이어야 합니다. 다른 모델의 벡터를 섞어 비교하지 않습니다.
         # 질의 벡터는 한 번 생성해 모든 필드와 조문 비교에 재사용합니다.
         if mode == 'hybrid':
@@ -181,16 +186,26 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
         per_query = []
         for query, vector in zip(queries,packed):
             scored = []
-            for row in rows:
+            for position, row in enumerate(rows):
                 # 법령명은 독립적인 가산 신호이며 검색 범위를 제한하는 필터가 아닙니다.
                 clean = expanded_query(query.replace(row['law_name'], ''))
                 clean = re.sub(r'\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{4}년\s*\d{1,2}월\s*\d{1,2}일', '', clean)
                 clean = re.sub(r'제\s*\d+\s*조(?:의\s*\d+)?', '', clean)
-                title = overlap(clean,row['title'],True)
+                noun_plan = noun_index.plan(clean)
+                title_nouns = noun_plan.matches(position, 'title')
+                body_nouns = noun_plan.matches(position, 'body')
+                title_noun_score = noun_plan.score(title_nouns)
+                body_noun_score = noun_plan.score(body_nouns)
+                title_ngram = overlap(clean,row['title'],True)
+                title = max(title_ngram, title_noun_score)
                 units = fragments(row['body']) if row['number'].startswith('제') else []
                 # A focused item can match even when its parent has a generic heading.
-                matches = sorted([{**u,'score':content_overlap(clean,u['text'])} for u in units], key=lambda u:-u['score'])
-                lexical = max([content_overlap(clean,body_text(row))] + [m['score'] for m in matches])
+                matches = [{**u,'ngram':content_overlap(clean,u['text'])} for u in units]
+                for match in matches:
+                    match['score'] = max(match['ngram'], noun_plan.score_text(match['text']))
+                matches.sort(key=lambda u:-u['score'])
+                lexical_ngram = max([content_overlap(clean,bodies[position])] + [m['ngram'] for m in matches])
+                lexical = max(lexical_ngram, body_noun_score)
                 semantic, title_semantic = (0., 0.)
                 if vector:
                     distances = db.execute('SELECT 1-vec_distance_cosine(?,?), 1-vec_distance_cosine(?,?)',
@@ -212,6 +227,9 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
                 scored.append({'row':row, 'quality':quality,
                     'semantic':semantic, 'title':title, 'title_semantic':title_semantic,
                     'body':content, 'lexical':lexical,
+                    'body_ngram':lexical_ngram, 'title_ngram':title_ngram,
+                    'body_noun_score':body_noun_score, 'title_noun_score':title_noun_score,
+                    'body_nouns':body_nouns, 'title_nouns':title_nouns,
                     'law':law, 'exact':bool(exact), 'query':query, 'eligible':eligible,
                     'matches':[{k:m[k] for k in ('location','text','start','end')} for m in matches[:3] if m['score'] > 0]})
             per_query.append(scored)
@@ -239,6 +257,10 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
             rrf_score=round(rrf.get(row['id'],0.)/normalizer,6), title_score=round(best['title'],4),
             body_score=round(best['body'],4), law_name_score=round(best['law'],4),
             body_keyword_score=round(best['lexical'],4), body_semantic_score=round(best['semantic'],4),
+            body_ngram_score=round(best['body_ngram'],4), title_ngram_score=round(best['title_ngram'],4),
+            body_noun_score=round(best['body_noun_score'],4), title_noun_score=round(best['title_noun_score'],4),
+            matched_body_nouns=best['body_nouns'], matched_title_nouns=best['title_nouns'],
+            keyword_method=fusion_metadata['keyword_method'],
             title_keyword_score=round(best['title'],4), exact_identifier=best['exact'],
             title_semantic_score=round(best['title_semantic'],4),
             rrf_raw_score=rrf[row['id']], rrf_max_score=normalizer,

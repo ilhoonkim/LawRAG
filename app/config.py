@@ -10,6 +10,10 @@ _KEYS_FROM_PROCESS = {name for name in ('LLM_API_KEY','OPENAI_API_KEY') if os.ge
 _MODELS_FROM_PROCESS = {name:os.environ[name] for name in ('CHAT_MODEL','RERANK_MODEL','EMBEDDING_MODEL') if os.getenv(name)}
 load_dotenv(ROOT / '.env')
 
+# 웹 검색·채팅의 고정 정책입니다. 환경변수나 사용자 요청으로 변경하지 않습니다.
+SEARCH_FUSION = 'rrf'
+SEARCH_THRESHOLD = 0.3
+
 
 def ai_key_source():
     """Describe the winning key source, never its value."""
@@ -31,10 +35,8 @@ class Settings:
     rerank_model: str = os.getenv('RERANK_MODEL', '')
     # 채팅의 실제 검토 상한은 chat_pipeline.review_limit()에서 최대 15개로 제한합니다.
     candidate_limit: int = int(os.getenv('SEARCH_CANDIDATE_LIMIT', '15'))
-    search_fusion: str = os.getenv('SEARCH_FUSION') or 'rrf'
     reference_limit: int = int(os.getenv('REFERENCE_LIMIT', '40'))
     context_max_chars: int = int(os.getenv('CONTEXT_MAX_CHARS', '60000'))
-    threshold: float = float(os.getenv('SEARCH_THRESHOLD') or '0.4')
     # 기존 검색용 설정 항목입니다. 현재 호출부는 이 값을 Store.search()에 전달하지 않습니다.
     # 현재 채팅의 필드별 점수·통과 조건은 retrieval.py를 참고하세요.
     title_weight: float = float(os.getenv('SEARCH_TITLE_WEIGHT', '0.35'))

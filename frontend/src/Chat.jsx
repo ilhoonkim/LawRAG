@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, streamChat, dateText, createChatId, copyText } from './shared';
-import SearchSettings from './SearchSettings';
 import { JusticeIcon, ProcessingIcon, TrashIcon } from './Icons';
 import AnswerMarkdown from './AnswerMarkdown';
 
@@ -31,11 +30,8 @@ export default function Chat({ visible, status, onSource }) {
   const [chats, setChats] = useState(readChats);
   const [active, setActive] = useState(null);
   const [question, setQuestion] = useState('');
-  const [mode, setMode] = useState('hybrid');
-  const [threshold, setThreshold] = useState(status?.threshold ?? .4);
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState(null);
-  const [fusion, setFusion] = useState(status?.search_fusion || 'rrf');
   const [sourceGroup, setSourceGroup] = useState(null);
   const [model, setModel] = useState('');
   const [customModel, setCustomModel] = useState('');
@@ -47,7 +43,6 @@ export default function Chat({ visible, status, onSource }) {
   const sourceTriggerRef = useRef(null);
   const newChatRef = useRef(null);
   const busyRef = useRef(false);
-  const searchSettingsChanged = useRef(false);
   const current = chats.find(c => c.id === active);
   const messages = current?.messages || [];
   const evidence = sourceGroup?.items || [];
@@ -59,8 +54,6 @@ export default function Chat({ visible, status, onSource }) {
     card?.focus({ preventScroll: true });
     card?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [sourceGroup]);
-  useEffect(() => { if (!searchSettingsChanged.current && status?.search_fusion) setFusion(status.search_fusion); }, [status?.search_fusion]);
-  useEffect(() => { if (!searchSettingsChanged.current && status?.threshold != null) setThreshold(status.threshold); }, [status?.threshold]);
   useEffect(() => { try { localStorage.setItem('lawrag.chats', JSON.stringify(chats.slice(0,30))); } catch { setStorageError('대화 저장 공간이 부족합니다.'); } }, [chats]);
   useEffect(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight; }, [chats, active, busy, stage]);
   async function send(e) {
@@ -74,7 +67,7 @@ export default function Chat({ visible, status, onSource }) {
     setActive(id); setQuestion('');
     try {
       const selectedModel = model === 'custom' ? customModel.trim() : (model || status?.chat_model);
-      const result = await streamChat({ question: value, mode, threshold: Number(threshold), history, fusion, model: selectedModel || undefined }, setStage);
+      const result = await streamChat({ question: value, mode: 'hybrid', history, model: selectedModel || undefined }, setStage);
       setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'assistant', content: result.answer, evidence: result.evidence, as_of: result.as_of, model: selectedModel, missing_facts: result.assessment?.missing_facts, additional_search_rounds: result.additional_search_rounds }] } : c));
     } catch (error) {
       setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'error', content: error.message }] } : c));
@@ -109,7 +102,7 @@ export default function Chat({ visible, status, onSource }) {
       </div>)}</nav>
       <div className="sidebar-footer">법령을 찾고, 근거로 답합니다.<br />대화는 이 브라우저에 저장됩니다.</div>
     </aside>
-    <main><header><span className="agent-pill">◉ 법령 검색 에이전트</span><div className="chat-header-actions"><span id="connection" role="status">{storageError || (status ? `${status.laws.length}개 법령 · ${status.llm_configured ? 'AI 연결 설정됨' : 'AI 키 미설정'}` : '서버 상태 확인 중')}</span><button className="mobile-new-chat" disabled={busy} onClick={() => setActive(null)}>새 대화</button><SearchSettings mode={mode} fusion={fusion} threshold={threshold} disabled={busy} onApply={value => { searchSettingsChanged.current = true; setMode(value.mode); setFusion(value.fusion); setThreshold(value.threshold); }} /></div></header>
+    <main><header><span className="agent-pill">◉ 법령 검색 에이전트</span><div className="chat-header-actions"><span id="connection" role="status">{storageError || (status ? `${status.laws.length}개 법령 · ${status.llm_configured ? 'AI 연결 설정됨' : 'AI 키 미설정'}` : '서버 상태 확인 중')}</span><button className="mobile-new-chat" disabled={busy} onClick={() => setActive(null)}>새 대화</button></div></header>
       <div id="messages" ref={messagesRef} aria-live="polite">
         {!current && <div className="welcome"><div className="welcome-icon">§</div><h1>법령에 묻고,<br />근거로 확인하세요.</h1><p>관련 조문을 찾아 답변과 원문을 함께 제공합니다.</p><button id="example" onClick={() => setQuestion('선박안전법에 적용받지 않는 선박의 종류는?')}>선박안전법에 적용받지 않는 선박의 종류는? ↗</button></div>}
         {messages.map((m,i) => <article key={i} className={`message ${m.role}`}>

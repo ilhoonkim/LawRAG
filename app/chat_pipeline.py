@@ -1,5 +1,6 @@
 """Verified retrieval with bounded graph expansion and one gap-driven search."""
 import re
+from .config import SEARCH_FUSION, SEARCH_THRESHOLD
 from .temporal import resolve_date
 
 # 채팅의 전체 흐름: 기준일 확정 → 원질의+재작성 검색 → 후보 검토 → 연결 조문 확장
@@ -33,8 +34,8 @@ def retrieve(store, provider, settings, body, *, variants=None, limit=None, expa
     named = [r['name'] for r in timeline['versions'] + timeline['missing'] if r['name'] in body.question]
     missing = [r for r in timeline['missing'] if r['name'] in named]
     evidence = store.search_enhanced(body.question,provider,variants=variants or (),cutoff=cutoff,
-        threshold=settings.threshold if body.threshold is None else body.threshold, limit=limit or body.limit,
-        mode=body.mode,fusion=body.fusion or settings.search_fusion)
+        threshold=SEARCH_THRESHOLD, limit=limit or body.limit,
+        mode=body.mode,fusion=SEARCH_FUSION)
     evidence, missing_refs = store.expand_context(evidence,cutoff=cutoff,question=body.question,
         limit=min(80,max(0,settings.reference_limit))) if expand else (evidence,[])
     return {'evidence': evidence, 'missing_references': missing_refs, 'as_of': cutoff.isoformat(),
@@ -184,7 +185,7 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
         linked_context_count=len(evidence)-len(visible_evidence),
         hierarchy_source_count=sum(bool(e.get('include_in_sources')) for e in visible_evidence),
         assessment=assessment,initial_assessment=initial_assessment,additional_search_rounds=rounds,
-        additional_queries=extra_queries if rounds else [],fusion=body.fusion or settings.search_fusion)
+        additional_queries=extra_queries if rounds else [],fusion=SEARCH_FUSION)
     if not evidence:
         if result['missing_versions']:
             targets = ', '.join(dict.fromkeys(f'{r["name"]} (시행 {r["effective"][:4]}-{r["effective"][4:6]}-{r["effective"][6:8]})' for r in result['missing_versions']))

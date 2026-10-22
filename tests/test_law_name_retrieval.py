@@ -81,11 +81,13 @@ def test_partial_name_rescues_specific_rule_without_losing_general_rule(tmp_path
     with store.connect() as db:
         vectors = list(map(tuple, db.execute('SELECT vector,title_vector FROM version_articles ORDER BY version,position')))
     results = store.search_enhanced(QUESTION, provider, threshold=.4, fusion=fusion)
-    assert {r['law_name'] for r in results} == {SPECIFIC, GENERAL}
+    assert {r['law_name'] for r in results} == {SPECIFIC, GENERAL, SPECIFIC.replace('10톤', '20톤')}
     specific = next(r for r in results if r['law_name'] == SPECIFIC)
-    # It really was below the prior gate, and the name signal fixes recall.
-    old_quality = .8 * specific['body_score'] + .2 * specific['title_score']
+    # 문자 겹침만 쓰던 이전 점수는 임계치 미만입니다. 이제 명사 일치도 함께 반영합니다.
+    old_quality = .8 * (.65*specific['body_semantic_score'] + .35*specific['body_ngram_score']) + .2*specific['title_ngram_score']
     assert old_quality < .4 <= specific['weighted_score']
+    wrong = next(r for r in results if r['law_name'] == SPECIFIC.replace('10톤', '20톤'))
+    assert wrong['weighted_score'] < specific['weighted_score']
     assert specific['law_name_score'] > 0 and specific['rrf_field_ranks']['law_name'] == 1
     assert specific['number'] == '제1조' and '2030년' in specific['body']
     assert '/documents/' in specific['html_url']
@@ -133,15 +135,17 @@ def test_keyword_mode_and_comparison_do_not_require_new_embeddings(tmp_path):
 
 def test_both_rules_reach_llm_review_and_sources(tmp_path):
     corpus(tmp_path)
+    wrong_size = SPECIFIC.replace('10톤', '20톤')
     class ChatProvider(QueryProvider):
         def filter_evidence(self, question, candidates):
-            assert {r['law_name'] for r in candidates} == {SPECIFIC, GENERAL}
+            # 고정 임계치 0.3에서는 약한 수치 불일치 후보도 검토 대상이 됩니다.
+            assert {r['law_name'] for r in candidates} == {SPECIFIC, GENERAL, wrong_size}
             assert all(r['number'] == '제1조' for r in candidates)
-            return candidates
+            return [r for r in candidates if r['law_name'] != wrong_size]
         def answer(self, question, evidence, history, **kwargs):
             assert {r['law_name'] for r in evidence} == {SPECIFIC, GENERAL}
             return '합성 테스트 자료 답변 [1][2]'
-    app = create_app(Settings(data_dir=tmp_path, search_fusion='rrf', threshold=.4), ChatProvider(), object())
+    app = create_app(Settings(data_dir=tmp_path), ChatProvider(), object())
     with TestClient(app) as client:
         result = client.post('/api/chat', json={'question': QUESTION})
     assert result.status_code == 200

@@ -144,7 +144,7 @@ def test_api_workflow_and_no_evidence_no_llm(tmp_path, provider):
     assert provider.calls == 1
     result = client.post('/api/chat', json={'question':'초콜릿 케이크 레시피', 'mode':'keyword'}).json()
     assert not result['generated'] and not result['evidence'] and provider.calls == 1
-    assert client.post('/api/search', json={'question':'테스트', 'threshold':1.1}).status_code == 422
+    assert client.post('/api/search', json={'question':'테스트', 'limit':11}).status_code == 422
     assert client.post('/api/laws/ingest', json={'mst':'../a'}).status_code == 422
     assert client.post('/api/chat', json={'question':'테스트'}, headers={'Origin':'https://evil.example'}).status_code == 403
     assert client.get('/documents/invalid.html').status_code == 404

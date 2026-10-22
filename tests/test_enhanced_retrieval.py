@@ -221,12 +221,11 @@ def test_sufficiency_requires_structured_output(monkeypatch,payload):
         provider.assess_evidence('질문',[],[],'2026-10-21')
 
 
-def test_api_exposes_both_fusions_and_no_reranker(tmp_path):
+def test_public_api_does_not_expose_alternate_fusion(tmp_path):
     app=create_app(Settings(data_dir=tmp_path),FakeProvider(),object())
     put(app.state.store,'합성법',[('1','적용범위','적용 범위 보호')])
     response=TestClient(app).post('/api/search/compare',json={'question':'적용 범위','mode':'keyword'})
-    assert response.status_code==200
-    assert response.json()['weighted'] and response.json()['rrf']
+    assert response.status_code==404
 
 
 def test_coherent_item_match_ranks_above_scattered_words(tmp_path):

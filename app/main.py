@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from .config import Settings
+from .config import Settings, SEARCH_FUSION, SEARCH_THRESHOLD
 from .laws import LawAPI, SetupError, parse_law, parse_admrul, render_html, VIEWER_VERSION
 from .provider import Provider
 from .store import Store
@@ -18,12 +18,12 @@ from .chat_pipeline import retrieve, run_chat, STAGES
 # HTTP 진입점과 요청 검증을 담당합니다. 검색·답변 로직은 chat_pipeline.py,
 # 수집 작업과 이력은 management.py, DB 접근은 store.py로 이어집니다.
 class SearchRequest(BaseModel):
+    # 이전 화면이 보낸 threshold/fusion은 미사용 필드로 무시합니다.
+    # 검색 정책은 서버에서 고정하며 OpenAPI에도 변경 옵션을 노출하지 않습니다.
     question: str = Field(min_length=2, max_length=2000)
-    threshold: float | None = Field(default=None, ge=0, le=1)
     mode: Literal['hybrid', 'keyword'] = 'hybrid'
     limit: int = Field(default=5, ge=1, le=10)
     as_of: date | None = None
-    fusion: Literal['weighted', 'rrf'] | None = None
 
 class Message(BaseModel):
     role: Literal['user', 'assistant']
@@ -78,8 +78,8 @@ def create_app(settings=None, provider=None, law_api=None):
     @app.get('/api/status')
     def status():
         return {'law_api_configured': bool(settings.law_oc), 'llm_configured': bool(settings.api_key),
-                'threshold': settings.threshold, 'chat_model': settings.chat_model,
-                'search_fusion': settings.search_fusion, 'laws': store.list_laws()}
+                'threshold': SEARCH_THRESHOLD, 'chat_model': settings.chat_model,
+                'search_fusion': SEARCH_FUSION, 'laws': store.list_laws()}
 
     @app.get('/api/laws/search')
     def find_laws(query: str = Query(min_length=2, max_length=100), page: int = Query(default=1, ge=1)):
@@ -110,17 +110,6 @@ def create_app(settings=None, provider=None, law_api=None):
     @app.post('/api/search')
     def search(body: SearchRequest):
         return retrieve(store, provider, settings, body)
-
-    @app.post('/api/search/compare')
-    def compare_search(body: SearchRequest):
-        from .temporal import resolve_date
-        cutoff, clarification = resolve_date(body.question, body.as_of)
-        if clarification:
-            return {'clarification':clarification,'weighted':[],'rrf':[]}
-        rewritten = provider.rewrite_question(body.question)
-        return store.search_enhanced(body.question,provider,variants=[rewritten],cutoff=cutoff,
-            threshold=settings.threshold if body.threshold is None else body.threshold,
-            limit=body.limit,mode=body.mode,compare=True)
 
     # 요청마다 모델을 분리해야 동시에 접속한 사용자의 선택이 서로 영향을 주지 않습니다.
     def chat_provider(body):
