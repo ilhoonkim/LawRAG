@@ -57,9 +57,11 @@ def test_top_15_each_round_and_references_only_in_final_context(extra):
     assert all(call['limit']==15 and call['threshold']==.68 for call in store.search_calls)
     assert len(provider.review_calls)==(2 if extra else 1)
     for batch in provider.review_calls:
-        assert len(batch)==15 and all(not r.get('relation') for r in batch)
+        assert 0 < len(batch) <= 15 and all(not r.get('relation') for r in batch)
         assert [r['score'] for r in batch] == sorted((r['score'] for r in batch),reverse=True)
-        assert len({r['number'] for r in batch})==15
+        assert len({r['number'] for r in batch})==len(batch)
+    reviewed = [r['number'] for batch in provider.review_calls for r in batch]
+    assert len(reviewed)==len(set(reviewed))  # 추가 검색에서도 이미 판정한 조문은 재호출하지 않습니다.
     assert [r['number'] for r in provider.review_calls[0]] == [f'제{i}조' for i in range(1,16)]
     assert len(result['evidence'])==15
     assert any(r.get('relation') for r in provider.context)

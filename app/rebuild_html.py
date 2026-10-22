@@ -4,6 +4,7 @@
 다른 저장 폴더: python -m app.rebuild_html --data-dir ./data
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 from pathlib import Path
 import re
@@ -12,9 +13,27 @@ import tempfile
 
 from .config import Settings
 from .laws import parse_law, parse_admrul, render_html
+from .store import Store
+from .temporal import today_in_korea
 
 
-def rebuild_version(directory, row):
+class ReadOnlyStore(Store):
+    """버전 선택 로직을 재사용하되 스키마 변경·색인 초기화는 절대 수행하지 않습니다."""
+    def __init__(self, directory):
+        self.directory = Path(directory)
+        self.db = self.directory / 'laws.sqlite3'
+
+    @contextmanager
+    def connect(self):
+        db = sqlite3.connect(self.db.resolve().as_uri() + '?mode=ro', uri=True)
+        db.row_factory = sqlite3.Row
+        try:
+            yield db
+        finally:
+            db.close()
+
+
+def rebuild_version(directory, row, *, store=None):
     """원본 버전과 경로를 검증한 뒤 HTML 파일 하나를 원자적으로 교체합니다."""
     version = row['version']
     if not isinstance(version, str) or not re.fullmatch(r'[0-9a-f]{20}', version):
@@ -30,7 +49,23 @@ def rebuild_version(directory, row):
     if hashlib.sha256(raw).hexdigest()[:20] != version:
         raise ValueError('보관 원문 XML의 해시가 수집 버전과 다릅니다. 기존 HTML은 유지합니다.')
     law = parse_admrul(raw) if row['kind'] == 'admrul' else parse_law(raw)
-    page = render_html(law)
+    store = store or ReadOnlyStore(directory)
+    options = {}
+    if law.kind == 'law':
+        from .document_links import reference_resolver
+        from .delegation import html_links
+        # 현행 문서는 오늘, 과거 문서는 자신의 시행일로 상대 버전을 고릅니다.
+        # 더 최신 적용 버전이 미수집이면 이전 버전으로 임의 연결하지 않습니다.
+        current = {v['version'] for v in store.temporal_versions()['versions']}
+        cutoff = today_in_korea() if law.version in current else store._date(law.effective)
+        if cutoff:
+            options.update(reference_resolver=reference_resolver(store, law, cutoff, standalone=True),
+                           reference_date=cutoff)
+            with store.connect() as db:
+                has_edges = db.execute("SELECT 1 FROM sqlite_master WHERE name='delegation_edges'").fetchone()
+            if has_edges:
+                options['delegation_links'] = html_links(store, law.version, cutoff, standalone=True)
+    page = render_html(law, **options)
     target = directory / 'html' / row['html']
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -46,7 +81,7 @@ def rebuild_version(directory, row):
             temporary.unlink(missing_ok=True)
 
 
-def rebuild_all(directory, notify=print):
+def rebuild_all(directory, notify=print, *, versions=None):
     directory = Path(directory)
     database = directory / 'laws.sqlite3'
     if not database.is_file():
@@ -59,11 +94,14 @@ def rebuild_all(directory, notify=print):
             'SELECT version,name,kind,effective,html FROM law_versions ORDER BY name,effective,version')]
     finally:
         db.close()
+    if versions is not None:
+        rows = [r for r in rows if r['version'] in versions]
+    store = ReadOnlyStore(directory)
     report = {'total': len(rows), 'completed': 0, 'failed': 0, 'errors': []}
     for index, row in enumerate(rows, 1):
         try:
-            rebuild_version(directory, row)
-        except (OSError, ValueError) as exc:
+            rebuild_version(directory, row, store=store)
+        except (OSError, ValueError, sqlite3.Error) as exc:
             report['failed'] += 1
             report['errors'].append({'version': row['version'], 'reason': str(exc)})
             notify(f'[{index}/{len(rows)}] 실패: {row["name"]} ({row["effective"]}) · {exc}')

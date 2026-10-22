@@ -3,11 +3,12 @@ import re
 from .temporal import resolve_date
 
 # 채팅의 전체 흐름: 기준일 확정 → 원질의+재작성 검색 → 후보 검토 → 연결 조문 확장
-# → 근거 충분성 점검 → 필요 시 한 번 더 검색 → 확보한 본문으로 답변 생성.
+# → 연결 조문 검토 → 근거 충분성 점검 → 필요 시 한 번 더 검색 → 확보한 본문으로 답변 생성.
 # progress 호출 시점이 화면 단계 표시의 기준이며, 타이머로 진행 상황을 추정하지 않습니다.
 STAGES = [
     ('rewrite', '질문 재조정 중'), ('search', '관련 법조항 검색 중'),
-    ('review', '법조항 후보군 검토 중'), ('assess', '근거 충분성 확인 중'),
+    ('review', '법조항 후보군 검토 중'), ('review_hierarchy', '상하위 연결 조문 검토 중'),
+    ('assess', '근거 충분성 확인 중'),
     ('additional_search', '부족한 근거 추가 검색 중'), ('answer', '근거 법조항 기반 답변 생성 중'),
 ]
 
@@ -55,7 +56,23 @@ def budgeted(evidence, max_chars):
     return selected,missing
 
 
-def review(store, provider, settings, question, candidates, cutoff, rejected):
+def filter_once(provider, question, candidates, checked, rejected):
+    """같은 질문·버전·조문은 한 번만 검토합니다. 검색 점수와 연결 경로는 캐시하지 않습니다."""
+    pending = [e for e in candidates if source_key(e) not in checked and source_key(e) not in rejected]
+    if pending:
+        accepted = {source_key(e):e for e in provider.filter_evidence(question, pending)}
+        for candidate in pending:
+            key = source_key(candidate)
+            if key in accepted:
+                checked[key] = {k:accepted[key][k] for k in ('evidence_role','application_conditions') if k in accepted[key]}
+            else:
+                rejected.add(key)
+    return [{**e, **checked[source_key(e)], 'relevance_checked':True} for e in candidates
+            if source_key(e) in checked and source_key(e) not in rejected]
+
+
+def review(store, provider, settings, question, candidates, cutoff, rejected, *, checked=None, progress=lambda stage: None):
+    checked = checked if checked is not None else {}
     # Search already applies the content threshold. Review only its highest
     # ranked hits, never references carrying an inherited score.
     ordered = sorted((e for e in candidates if not e.get('relation') and source_key(e) not in rejected),
@@ -64,27 +81,45 @@ def review(store, provider, settings, question, candidates, cutoff, rejected):
     for e in ordered:
         unique.setdefault(source_key(e),e)
     selected = list(unique.values())[:review_limit(settings)]
-    reviewed = provider.filter_evidence(question,selected) if selected else []
+    reviewed = filter_once(provider, question, selected, checked, rejected)
     # 탈락 기록은 추가 검색에도 유지됩니다. 같은 후보가 연결 조문으로 우회 복귀하지 못합니다.
     rejected.update({source_key(e) for e in selected} - {source_key(e) for e in reviewed})
     if not reviewed:
         return [], []
-    # Only approved parents contribute references. These remain answer context,
-    # not another potentially huge candidate-verification round.
+    # 통과한 검색 근거에서만 확장합니다. 위임·상하위 연결 자체가 질의 관련성을
+    # 보장하지 않으므로 표시 대상 연결 조문은 별도 묶음으로 검토합니다.
     expanded, missing = store.expand_context(reviewed,cutoff=cutoff,question=question,
         limit=min(80,max(0,settings.reference_limit)))
     expanded = [{**e,'evidence_role':'supporting'} if e.get('relation') else e
                 for e in expanded if source_key(e) not in rejected]
+    hierarchy = {}
+    for e in expanded:
+        if e.get('relation') and e.get('include_in_sources'):
+            hierarchy.setdefault(source_key(e), e)
+    # graph가 정한 문맥 우선순위를 유지합니다. 원문을 잘라 보내지 않으며 최대 15개만
+    # 검토합니다. 너무 긴 묶음은 evidence_review에서 분할하고 최대 2개 병렬 처리합니다.
+    selected_links = list(hierarchy.values())[:review_limit(settings)]
+    deferred = [{'law_name':e['law_name'], 'number':e['number'], 'version':e['version'],
+                 'reason':'상하위 연결 조문 검토 개수 제한으로 이번 답변에서 제외되었습니다.'}
+                for e in list(hierarchy.values())[review_limit(settings):]]
+    if any(source_key(e) not in checked for e in selected_links):
+        progress('review_hierarchy')
+    approved_links = {source_key(e):e for e in filter_once(provider, question, selected_links, checked, rejected)}
+    expanded = [approved_links[source_key(e)] if source_key(e) in hierarchy else e for e in expanded
+                if source_key(e) not in hierarchy or source_key(e) in approved_links]
     evidence, omitted = budgeted(expanded,max(1000,settings.context_max_chars))
     valid = {source_key(e) for e in evidence}
     for e in evidence:
         e.pop('parent_context',None)
         e['reference_titles'] = [r for r in e.get('reference_titles',[])
             if (r.get('version',e['version']),r['law_name'],r['number']) in valid]
+        e['reference_edges'] = [r for r in e.get('reference_edges',[]) if not any(
+            (r.get(side+'_version'),r.get(side+'_law'),r.get(side+'_article')) in rejected
+            for side in ('from','to'))]
     # Missing refs from rejected parents cannot alone suppress the final answer.
     parent_keys = {(e['version'],e['number']) for e in evidence}
     missing = [r for r in missing if not r.get('from_article') or (r['version'],r['from_article']) in parent_keys]
-    return evidence,missing+omitted
+    return evidence,missing+omitted+deferred
 
 
 def run_chat(store, provider, settings, body, progress=lambda stage: None):
@@ -100,9 +135,9 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
     progress('search')
     result = retrieve(store,provider,settings,search_body,variants=[rewritten],
                       limit=review_limit(settings),expand=False)
-    candidates, rejected = result['evidence'], set()
+    candidates, rejected, checked = result['evidence'], set(), {}
     progress('review')
-    evidence, missing = review(store,provider,settings,body.question,candidates,cutoff,rejected)
+    evidence, missing = review(store,provider,settings,body.question,candidates,cutoff,rejected,checked=checked,progress=progress)
     catalog_gaps = [{'law_name':r['name'],'number':'기준일 적용 버전','reason':'질문에 명시된 법령의 적용 버전이 미수집입니다.'} for r in result['missing_versions']]
     missing += catalog_gaps
     progress('assess')
@@ -134,7 +169,7 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None):
             if key not in rejected and (key not in merged or merged[key].get('relation')):
                 merged[key] = e
         progress('review')
-        evidence, missing = review(store,provider,settings,body.question,list(merged.values()),cutoff,rejected)
+        evidence, missing = review(store,provider,settings,body.question,list(merged.values()),cutoff,rejected,checked=checked,progress=progress)
         missing += catalog_gaps
         progress('assess')
         assessment = provider.assess_evidence(body.question,evidence,missing,result['as_of'])

@@ -305,8 +305,9 @@ def missing_context(store, roots):
     return result
 
 
-def html_links(store, version, cutoff):
+def html_links(store, version, cutoff, *, standalone=False):
     """HTML에는 한 단계의 양방향 링크만 표시합니다. 클릭 시 대상 버전 HTML로 이동합니다."""
+    from .document_links import document_url
     result, seen = {}, set()
     with store.connect() as db:
         for edge in active_edges(store, cutoff):
@@ -324,7 +325,7 @@ def html_links(store, version, cutoff):
                 seen.add(key)
                 result.setdefault(own_number, []).append(dict(name=edge[other+'_law'], number=number, title=node['title'],
                     label=label+(' 위임조문 비교' if edge['relation']=='delegation_comparison' else ' 인용 조문'),
-                    url='/documents/'+target_version+'.html?as_of='+cutoff.isoformat()+'#'+quote(node['section_id'],safe='')))
+                    url=document_url(target_version+'.html', node['section_id'], cutoff, standalone=standalone)))
     return result
 
 

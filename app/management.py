@@ -269,6 +269,16 @@ class Management:
             attempted = delegation_attempted if delegation_attempted is not None else set()
             for version in sorted(versions):
                 refresh(self.store, self.api, version, attempted)
+            # 동반 법령이 모두 저장된 뒤 정적 HTML도 갱신해야 먼저 받은 법령에서
+            # 나중에 받은 시행령·규칙으로 이동할 수 있습니다. DB/임베딩은 바꾸지 않습니다.
+            if versions:
+                import logging
+                from .rebuild_html import rebuild_all
+                logger = logging.getLogger(__name__)
+                report = rebuild_all(self.store.directory, notify=logger.info, versions=versions)
+                if report['failed']:
+                    logger.warning('상하위 HTML 연결 갱신 %s건 실패. app.rebuild_html로 재시도하세요.', report['failed'])
+                return {'html':report}
 
     def history(self, page, batch=None):
         where, args = ('WHERE batch=?', (batch,)) if batch else ('', ())

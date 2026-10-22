@@ -1,5 +1,7 @@
 """Synthetic end-to-end: hierarchy sources, numeric citations and HTML navigation."""
 import os
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import shutil
 import socket
@@ -38,6 +40,11 @@ def main():
     server=uvicorn.Server(uvicorn.Config(app,host='127.0.0.1',port=port,log_level='error'))
     thread=threading.Thread(target=server.run,daemon=True)
     thread.start()
+    # 관리형 Chromium은 file:// 열기를 차단하므로 파일 폴더만 제공하는 정적 서버로 검증합니다.
+    # 앱의 /documents 렌더링 경로를 전혀 거치지 않습니다.
+    files = ThreadingHTTPServer(('127.0.0.1',0),partial(SimpleHTTPRequestHandler,directory=str(root/'html')))
+    threading.Thread(target=files.serve_forever,daemon=True).start()
+    static_url = f'http://127.0.0.1:{files.server_port}/'
     try:
         for _ in range(100):
             if server.started:
@@ -69,10 +76,24 @@ def main():
             expect(frame.locator('h1')).to_have_text('합성안전법 시행령')
             expect(page.locator('#source-dialog .dialog-head strong')).to_have_text('합성안전법 시행령 제2조(검사)')
             page.screenshot(path=str(root/'cross-document.png'),full_page=True)
+            # 새 수집 결과의 정적 파일에서도 앱 서버 없이 법/영과 위임 링크를 따라갑니다.
+            page.goto(static_url+versions['300']+'.html#합성안전법 시행규칙-제7조')
+            page.locator('section:target pre').get_by_role('link',name='제2조(검사)',exact=True).click()
+            expect(page.locator('h1')).to_have_text('합성안전법 시행령')
+            assert page.url.startswith(static_url)
+            expect(page.locator('section:target')).to_have_attribute('id','합성안전법 시행령-제2조')
+            page.locator('section:target .delegation-links').get_by_role('link',name='합성안전법 제2조(검사)',exact=True).click()
+            expect(page.locator('h1')).to_have_text('합성안전법')
+            page.goto(static_url+versions['300']+'.html#합성안전법 시행규칙-제2조')
+            page.locator('section:target pre').get_by_role('link',name='「합성안전법 시행령」',exact=True).click()
+            expect(page.locator('h1')).to_have_text('합성안전법 시행령')
+            page.screenshot(path=str(root/'static-cross-document.png'),full_page=True)
             assert not errors,errors
             browser.close()
         print('Delegation source/citation/HTML navigation passed:',root)
     finally:
+        files.shutdown()
+        files.server_close()
         server.should_exit=True
         thread.join(timeout=10)
 

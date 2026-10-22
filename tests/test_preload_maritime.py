@@ -1,5 +1,6 @@
 """Current-only collection sets, exact names, resumability and explicit gaps."""
 import json
+from urllib.parse import quote, unquote, urlsplit
 
 import pytest
 
@@ -11,6 +12,7 @@ from app.store import Store
 from test_delegation import DelegationAPI
 from test_hierarchy_collection import ROWS
 from test_workflow import FakeProvider
+from test_annex_html import DocumentLinks
 
 
 @pytest.fixture
@@ -56,6 +58,25 @@ def test_one_current_set_with_sibling_rules_and_restart(manager):
     assert set(manager.api.fetched)=={'100','200','300','400'}
     assert report['items'][0]['completed']==4
     assert manager.api.calls==['100']
+    # API/앱 경유 없이 파일을 직접 열어도 다른 문서와 실제 조문 앵커로 연결됩니다.
+    assert report['items'][0]['html']['completed']==4
+    with manager.store.connect() as db:
+        versions = {r['mst']:r['version'] for r in db.execute('SELECT mst,version FROM law_versions')}
+    directory = manager.store.directory/'html'
+    page = (directory/(versions['300']+'.html')).read_text(encoding='utf-8')
+    for mst,name in [('100',ROWS[0]['name']),('200',ROWS[1]['name'])]:
+        assert f'href="{versions[mst]}.html#{quote(name+"-제2조",safe="")}"' in page
+    assert '영 <a href="'+versions['200']+'.html#' in page
+    assert f'<a href="{versions["100"]}.html">「합성안전법」</a>(이하 “법”이라 한다)' in page
+    assert f'<a href="{versions["200"]}.html">「합성안전법 시행령」</a>(이하 “영”이라 한다)' in page
+    assert '상하위 조문 연결' in page and '/documents/' not in page
+    for path in directory.glob('*.html'):
+        for section,url in DocumentLinks(path.read_text(encoding='utf-8')).links:
+            target = urlsplit(url)
+            if target.path.endswith('.html') and not target.scheme:
+                destination = DocumentLinks((directory/target.path).read_text(encoding='utf-8'))
+                if target.fragment:
+                    assert unquote(target.fragment) in destination.ids
     manager.api.fetched.clear()
     restarted = Management(Store(manager.store.directory), FakeProvider(), manager.api)
     again = preload(restarted,[ROWS[0]['name']],notify=lambda _:None)

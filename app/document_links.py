@@ -1,7 +1,7 @@
 """보관 원문의 상위법 참조를 같은 기준일의 저장된 HTML로 연결합니다.
 
-문서 열람에는 API 호출이나 재임베딩이 없습니다. 날짜별 링크는 응답을 만들 때만
-붙여서, 한 버전의 정적 HTML을 다른 기준일의 링크로 덮어쓰지 않습니다.
+문서 열람에는 API 호출이나 재임베딩이 없습니다. 앱은 질문 기준일의 링크를 만들고,
+저장 HTML은 재생성 시 확인한 기준일의 상대 파일 링크를 사용합니다.
 """
 import json
 from urllib.parse import quote
@@ -41,7 +41,15 @@ def hierarchy_aliases(store, mst, effective, name):
     return result
 
 
-def reference_resolver(store, law, as_of):
+def document_url(filename, section_id, as_of, *, standalone=False):
+    """직접 여는 HTML은 같은 폴더의 파일, 앱에서는 기준일을 보존하는 문서 API로 이동합니다."""
+    prefix = '' if standalone else '/documents/'
+    query = '' if standalone else '?as_of=' + as_of.isoformat()
+    fragment = '#' + quote(section_id, safe='') if section_id else ''
+    return prefix + filename + query + fragment
+
+
+def reference_resolver(store, law, as_of, *, standalone=False):
     """약칭 선언 > 공식 상위법 순서. 대상 조문/별표가 저장돼 있을 때만 링크합니다."""
     with store.connect() as db:
         source = db.execute('SELECT mst FROM law_versions WHERE version=?', (law.version,)).fetchone()
@@ -54,25 +62,36 @@ def reference_resolver(store, law, as_of):
             named.setdefault(normalize_name(version['name']), []).append(version)
     cache = {}
 
-    def resolve(article, match, number):
-        target = reference_target(article.body, match.start(), law.name)
-        target = target.replace('(대상 확인 필요)', '')
-        target = declared.get(target, target)
-        if normalize_name(target) == normalize_name(law.name):
-            return None
-        candidates = named.get(normalize_name(target), [])
-        if len(candidates) != 1:
-            return None
-        version = candidates[0]
-        key = (version['version'], number)
-        if key not in cache:
-            table = 'annex_nodes' if number.startswith('별표') else 'version_articles'
-            with store.connect() as db:
-                row = db.execute(f'SELECT number,title,section_id FROM {table} WHERE version=? AND number=?', key).fetchone()
-            cache[key] = dict(row) if row else None
-        node = cache[key]
-        if not node:
-            return None
-        return {**node, 'name': version['name'], 'url': '/documents/' + version['html'] +
-                '?as_of=' + as_of.isoformat() + '#' + quote(node['section_id'], safe='')}
-    return resolve
+    class Resolver:
+        """렌더러의 조번호 콜백과 인용 법령명 링크가 같은 대상·기준일을 공유합니다."""
+        def law_name(self, name):
+            # 전체 법령명은 약칭으로 추측하지 않고 정확히 일치하는 저장 문서만 연결합니다.
+            candidates = named.get(normalize_name(name), [])
+            if len(candidates) != 1 or normalize_name(name) == normalize_name(law.name):
+                return None
+            version = candidates[0]
+            return {'name':version['name'], 'url':document_url(
+                version['html'], '', as_of, standalone=standalone)}
+
+        def __call__(self, article, match, number):
+            target = reference_target(article.body, match.start(), law.name)
+            target = target.replace('(대상 확인 필요)', '')
+            target = declared.get(target, target)
+            if normalize_name(target) == normalize_name(law.name):
+                return None
+            candidates = named.get(normalize_name(target), [])
+            if len(candidates) != 1:
+                return None
+            version = candidates[0]
+            key = (version['version'], number)
+            if key not in cache:
+                table = 'annex_nodes' if number.startswith('별표') else 'version_articles'
+                with store.connect() as db:
+                    row = db.execute(f'SELECT number,title,section_id FROM {table} WHERE version=? AND number=?', key).fetchone()
+                cache[key] = dict(row) if row else None
+            node = cache[key]
+            if not node:
+                return None
+            return {**node, 'name': version['name'], 'url': document_url(
+                version['html'], node['section_id'], as_of, standalone=standalone)}
+    return Resolver()

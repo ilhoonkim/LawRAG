@@ -88,8 +88,11 @@ def preload(manager, names=LAWS, *, list_only=False, notify=print):
                         entry['errors'].append({'name':event['name'], 'reason':event['reason']})
                     notify('  '+event['status']+(' · '+event['reason'] if event['reason'] else ''))
                     checkpoint()
-                notify('  위임조문 3단비교 조회·버전 매핑')
-                manager.run([], plan_id=plan['plan_id'], delegation_attempted=relation_attempted)
+                notify('  위임조문 3단비교 조회·버전 매핑 및 HTML 상하위 링크 생성')
+                refreshed = manager.run([], plan_id=plan['plan_id'], delegation_attempted=relation_attempted) or {}
+                entry['html'] = refreshed.get('html', {'completed':0, 'failed':0})
+                notify(f'  HTML 링크 생성 완료 {entry["html"]["completed"]} · 실패 {entry["html"]["failed"]}')
+                entry['errors'].extend(entry['html'].get('errors', []))
                 entry['delegation'], missing = [], []
                 with manager.store.connect() as db:
                     for item in plan['items']:
@@ -100,7 +103,7 @@ def preload(manager, names=LAWS, *, list_only=False, notify=print):
                             missing.append(item['name'])
                 entry['missing'] = missing
                 incomplete_relations = any(r['status'] not in ('completed','unavailable') for r in entry['delegation'])
-                entry['status'] = 'incomplete' if missing or entry['warnings'] or incomplete_relations else 'completed'
+                entry['status'] = 'incomplete' if missing or entry['warnings'] or incomplete_relations or entry['html']['failed'] else 'completed'
                 notify(f'  본문 신규 완료 {entry["completed"]} · 기존 {entry["already_collected"]} · 묶음 상태 {entry["status"]}')
             except (SetupError, ValueError) as exc:
                 entry.update(status='failed')

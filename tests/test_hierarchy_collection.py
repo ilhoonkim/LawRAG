@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.hierarchy import parse_hierarchy
-from app.laws import LawAPI, SetupError
+from app.laws import LawAPI, SetupError, parse_law, render_html
 from app.main import create_app
 from app.management import CollectionInput, Management
 from app.store import Store
@@ -193,6 +193,7 @@ def test_plan_endpoint_collection_and_rule_law_decree_links(manager):
             assert target.status_code == 200 and f'id="{name}-제2조"' in target.text
         # 영은 같은 규칙의 제2조로 잘못 연결하면 안 됩니다.
         assert '영 <a href="/documents/'+versions['200'] in response.text
+        assert f'<a href="/documents/{versions["200"]}.html?as_of=2026-10-22">「합성안전법 시행령」</a>' in response.text
         assert '제2조제2항' not in response.text  # clickable title plus preserved paragraph suffix
         assert '제2조(검사)</a>제2항' in response.text
         evidence = source(manager.store, versions['300'], '제7조')
@@ -216,6 +217,28 @@ def test_explicit_alias_and_missing_latest_version_do_not_fall_back(manager):
         assert '/documents/'+decree+'.html' not in current.text
         assert '영 제2조제2항' in current.text
         assert client.get('/documents/'+rule+'.html?as_of=2020-01-01').status_code == 400
+    # 정적 파일도 동일한 시점 검증을 적용합니다. 알려진 최신 본문 미수집 시 구버전 링크 금지.
+    from app.rebuild_html import rebuild_all
+    assert rebuild_all(manager.store.directory,notify=lambda _:None)['failed']==0
+    static = (manager.store.directory/'html'/(rule+'.html')).read_text(encoding='utf-8')
+    assert decree+'.html' not in static and '영 제2조제2항' in static
+
+
+@pytest.mark.parametrize('short,mst,name', [('법','100','합성안전법'),('영','200','합성안전법 시행령')])
+def test_full_name_declaration_immediately_followed_by_article(manager, short, mst, name):
+    from app.document_links import reference_resolver
+    queued = manager.queue_plan(manager.plan_collection(request())['plan_id'])
+    manager.run(queued['ids'],plan_id=queued['plan_id'])
+    with manager.store.connect() as db:
+        versions = {r['mst']:r['version'] for r in db.execute('SELECT mst,version FROM law_versions')}
+    law = parse_law((manager.store.directory/'raw'/(versions['300']+'.xml')).read_bytes())
+    law.articles[0].body = (f'① 「{name}」 (이하 "{short}"이라 한다) 제2조제1항에 따른다.\n'
+                            f'② {short} 제2조제2항을 적용한다.')
+    page = render_html(law,reference_resolver=reference_resolver(manager.store,law,date(2026,10,22),standalone=True))
+    target = versions[mst]+'.html'
+    assert f'<a href="{target}">「{name}」</a> (이하 &quot;{short}&quot;이라 한다) <a href="{target}#' in page
+    assert f'② {short} <a href="{target}#' in page
+    assert '제2조(검사)</a>제1항' in page
 
 
 def test_official_ancestor_without_suffix_or_declaration_resolves_yeong(manager):

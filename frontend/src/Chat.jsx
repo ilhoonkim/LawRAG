@@ -13,6 +13,7 @@ function readChats() {
 const stageLabels = {
   rewrite: '질문 재조정 중', search: '관련 법조항 검색 중',
   review: '법조항 후보군 검토 중', assess: '근거 충분성 확인 중',
+  review_hierarchy: '상하위 연결 조문 검토 중',
   additional_search: '부족한 근거 추가 검색 중', answer: '근거 법조항 기반 답변 생성 중'
 };
 function groupedSources(evidence = []) {

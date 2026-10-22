@@ -18,6 +18,8 @@ SYSTEM = (
     '질문이 넓으면 해당하는 절차별·조건별 근거를 허용하되 무관한 절차는 제외하세요. '
     '서류·제출 요건이 본문에 있으면 참조자료 일부가 없다는 이유만으로 제외하지 마세요. '
     '정의·예외·준용·위임·제재 등 보조 근거는 표현이 덜 비슷해도 본문으로 관련성을 판단하세요. '
+    '상하위 연결이나 위임조문 비교 관계만으로 통과시키지 마세요. 연결 경로는 참고 정보이며, '
+    '해당 조문 본문이 실제 질문의 답변·요건·예외·해석에 필요한지 따로 판정하세요. '
     '적용 조건이 미확인이라는 이유만으로 제거하지 말고 conditions에 확인할 사용자 사실을 쓰세요. '
     '관련 근거는 relevant=true 및 role=direct 또는 supporting, 무관한 근거는 relevant=false 및 role=irrelevant입니다. '
     '입력된 정수 id마다 정확히 한 번씩 판정하세요. id를 생략·중복·변경하지 마세요. '
@@ -96,6 +98,9 @@ def filter_evidence(provider, question, candidates):
         # Matched spans already occur in the full body. Avoid sending them twice.
         document = {k:candidate.get(k,'') for k in ('law_name','number','title','effective','body')}
         document['matched_locations'] = [u['location'] for u in candidate.get('matched_units',[])]
+        if candidate.get('relation') and candidate.get('include_in_sources'):
+            document['connection'] = {k:candidate.get(k) for k in
+                ('relation','referenced_by_law','referenced_by','reference_edges')}
         length = len(json.dumps(document,ensure_ascii=False))
         if batch and (size+length>BATCH_CHAR_LIMIT or len(batch)>=15):
             batches.append(batch)

@@ -139,6 +139,21 @@ def render_html(law: Law, *, reference_resolver=None, reference_date=None, deleg
     esc = html.escape
     toc_parts, sections, target_styles = [], [], []
     last_chapter = ''
+    def annotated_names(text):
+        # 선언부의 「전체 법령명」도 문서 링크로 만듭니다. 조문 링크와 별도로 처리해
+        # '(이하 "영"이라 한다) 제7조'의 조번호도 동일 대상의 앵커로 연결합니다.
+        resolve_name = getattr(reference_resolver, 'law_name', None)
+        if resolve_name is None:
+            return esc(text)
+        parts, cursor = [], 0
+        for match in re.finditer(r'「([^」]+)」', text):
+            parts.append(esc(text[cursor:match.start()]))
+            target = resolve_name(match[1])
+            parts.append(f'<a href="{esc(target["url"], quote=True)}">{esc(match[0])}</a>'
+                         if target else esc(match[0]))
+            cursor = match.end()
+        parts.append(esc(text[cursor:]))
+        return ''.join(parts)
     def heading(number, title):
         return reference_heading(number, title)
     def add_toc(node, index):
@@ -154,7 +169,7 @@ def render_html(law: Law, *, reference_resolver=None, reference_date=None, deleg
         by_number = {a.number: a for a in [*law.articles, *law.annexes]}
         parts, cursor = [], 0
         for match in HTML_REFERENCE_PATTERN.finditer(article.body):
-            parts.append(esc(article.body[cursor:match.start()]))
+            parts.append(annotated_names(article.body[cursor:match.start()]))
             if match[3]:
                 number = f'별표 {int(match[3])}' + (f'의{int(match[4])}' if match[4] else '')
             elif match[1]:
@@ -175,7 +190,7 @@ def render_html(law: Law, *, reference_resolver=None, reference_date=None, deleg
                 else:
                     parts.append(esc(match[0]))
             cursor = match.end()
-        parts.append(esc(article.body[cursor:]))
+        parts.append(annotated_names(article.body[cursor:]))
         return ''.join(parts)
     for index, article in enumerate(law.articles, 1):
         if article.chapter and article.chapter != last_chapter:
