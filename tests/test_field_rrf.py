@@ -11,8 +11,8 @@ from test_workflow import FakeProvider
 
 def observations(**fields):
     keys = sorted(set().union(*(set(values) for values in fields.values())))
-    return [{'row': {'id': key}, **{field: fields.get(field, {}).get(key, 0.)
-            for field in ('title', 'title_semantic', 'lexical', 'semantic')}} for key in keys]
+    return [{'row': {'id': key, 'law_name': key}, **{field: fields.get(field, {}).get(key, 0.)
+            for field in ('title', 'title_semantic', 'lexical', 'semantic', 'law')}} for key in keys]
 
 
 def test_keyword_rrf_has_separate_title_and_body_ranks():
@@ -20,9 +20,9 @@ def test_keyword_rrf_has_separate_title_and_body_ranks():
     # article supported by both fields. These must not be the same ranking.
     scores = observations(title={'both': .6}, lexical={'body-only': 1., 'both': .7})
     fused, ranks = field_rrf([scores], 'keyword')
-    assert ranks == {'title': {'both': 1}, 'body': {'body-only': 1, 'both': 2}}
+    assert ranks == {'title': {'both': 1}, 'body': {'body-only': 1, 'both': 2}, 'law_name': {}}
     assert fused['both'] == pytest.approx(1/61 + 1/62)
-    assert fused['body-only'] / (2/61) == pytest.approx(.5)
+    assert fused['body-only'] / (3/61) == pytest.approx(1/3)
     assert fused['both'] > fused['body-only']
 
 
@@ -30,7 +30,7 @@ def test_hybrid_combines_retrievers_within_fields_before_combining_fields():
     scores = observations(title={'a': .9, 'b': .8}, title_semantic={'b': .9},
                           lexical={'c': .9, 'b': .8}, semantic={'b': .9})
     fused, ranks = field_rrf([scores], 'hybrid')
-    assert ranks == {'title': {'b': 1, 'a': 2}, 'body': {'b': 1, 'c': 2}}
+    assert ranks == {'title': {'b': 1, 'a': 2}, 'body': {'b': 1, 'c': 2}, 'law_name': {}}
     assert fused['b'] == pytest.approx(2/61)
     assert fused['a'] == pytest.approx(1/62)
     assert fused['c'] == pytest.approx(1/62)
@@ -43,18 +43,18 @@ def test_rewrites_do_not_add_votes_at_final_field_level():
     assert set(fused) == {'a', 'b'}
     assert fused['a'] == pytest.approx(2/61)
     assert fused['b'] == pytest.approx(2/62)
-    assert set(ranks) == {'title', 'body'}
+    assert set(ranks) == {'law_name', 'title', 'body'}
     assert field_rrf([original, rewrite, original, rewrite], 'hybrid') == (fused, ranks)
 
 
-def test_empty_field_contributes_zero_and_exact_lookup_is_not_a_third_vote():
+def test_empty_field_contributes_zero_and_exact_lookup_does_not_invent_a_name_match():
     scores = observations(lexical={'body': .8})
     fused, ranks = field_rrf([scores], 'keyword')
-    assert ranks['title'] == {} and fused['body'] / (2/61) == pytest.approx(.5)
+    assert ranks['title'] == {} and fused['body'] / (3/61) == pytest.approx(1/3)
     fused, ranks = field_rrf([scores], 'keyword', exact_ids=['exact'])
     assert ranks['title']['exact'] == ranks['body']['exact'] == 1
     assert fused['exact'] == pytest.approx(2/61)
-    assert field_rrf([], 'keyword') == ({}, {'title': {}, 'body': {}})
+    assert field_rrf([], 'keyword') == ({}, {'title': {}, 'body': {}, 'law_name': {}})
 
 
 def test_field_pool_is_bounded_deterministic_and_zero_scores_do_not_vote():
@@ -98,8 +98,8 @@ def test_existing_title_vector_affects_rrf_without_reembedding_or_body_gate_bypa
     result = store.search_enhanced('계약 서류', provider, variants=['필요 서류'], compare=True)
     assert provider.queries == [['계약 서류', '필요 서류']]
     assert result['rrf_strategy'] == 'field_hierarchical'
-    assert result['rrf_fields'] == ['title', 'body']
-    assert result['rrf_max_score'] == pytest.approx(2/61)
+    assert result['rrf_fields'] == ['law_name', 'title', 'body']
+    assert result['rrf_max_score'] == pytest.approx(3/61)
     assert {e['number'] for e in result['rrf']} == {'제1조', '제2조'}
     assert result['rrf'][0]['number'] == '제2조'
     first = result['rrf'][0]
@@ -107,18 +107,18 @@ def test_existing_title_vector_affects_rrf_without_reembedding_or_body_gate_bypa
     ranks = first['rrf_field_ranks']
     expected = sum(1/(60+rank) for rank in ranks.values() if rank)
     assert first['rrf_raw_score'] == pytest.approx(expected)
-    assert first['score'] == pytest.approx(expected/(2/61), abs=1e-6)
+    assert first['score'] == pytest.approx(expected/(3/61), abs=1e-6)
     assert {e['id'] for e in result['weighted']} == {e['id'] for e in result['rrf']}
     assert result['weighted'][0]['weighted_score'] == result['weighted'][1]['weighted_score']
 
 
-def test_keyword_mode_needs_no_vectors_and_uses_two_fields(tmp_path):
+def test_keyword_mode_needs_no_vectors_and_reports_three_fields(tmp_path):
     store, provider = vector_fixture(tmp_path), QueryProvider()
     with store.connect() as db:
         db.execute('UPDATE version_articles SET vector=NULL, title_vector=NULL')
     result = store.search_enhanced('계약 서류', provider, mode='keyword', compare=True)
     assert provider.queries == []
-    assert result['rrf'] and result['rrf_fields'] == ['title', 'body']
+    assert result['rrf'] and result['rrf_fields'] == ['law_name', 'title', 'body']
     assert all(e['number'] != '제3조' for e in result['rrf'])
 
 
@@ -131,7 +131,7 @@ def test_missing_or_wrong_dimension_title_vector_cannot_silently_change_fusion(t
         store.search_enhanced('계약 서류', QueryProvider(), fusion='rrf')
 
 
-def test_explicit_identifier_and_duplicate_rewrite_keep_two_field_normalization(tmp_path):
+def test_explicit_identifier_and_duplicate_rewrite_keep_three_field_normalization(tmp_path):
     store = Store(tmp_path)
     put(store, '합성법', [('1', '일반', '다른 내용')])
     result = store.search_enhanced('합성법 제1조', QueryProvider(), mode='keyword',
@@ -139,12 +139,12 @@ def test_explicit_identifier_and_duplicate_rewrite_keep_two_field_normalization(
     assert result['queries'] == ['합성법 제1조']
     hit = result['rrf'][0]
     assert hit['exact_identifier'] and hit['score'] == 1
-    assert hit['rrf_field_ranks'] == {'title': 1, 'body': 1}
-    assert hit['rrf_raw_score'] == pytest.approx(2/61)
+    assert hit['rrf_field_ranks'] == {'law_name': 1, 'title': 1, 'body': 1}
+    assert hit['rrf_raw_score'] == pytest.approx(3/61)
 
 
 def test_empty_compare_preserves_score_metadata(tmp_path):
     result = Store(tmp_path).search_enhanced('계약 서류', QueryProvider(), compare=True)
     assert not result['weighted'] and not result['rrf']
-    assert result['rrf_fields'] == ['title', 'body']
-    assert result['rrf_max_score'] == pytest.approx(2/61)
+    assert result['rrf_fields'] == ['law_name', 'title', 'body']
+    assert result['rrf_max_score'] == pytest.approx(3/61)

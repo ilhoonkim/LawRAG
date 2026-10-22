@@ -25,7 +25,7 @@ export default function SearchSettings({ mode, fusion, threshold, disabled, onAp
         <label>검색 방식<select aria-label="검색 방식" value={draft.mode} onChange={e => setDraft({ ...draft, mode: e.target.value })}><option value="hybrid">키워드 + 임베딩</option><option value="keyword">키워드 검색</option></select></label>
         <label>검색 결합 방식<select aria-label="검색 결합 방식" value={draft.fusion} onChange={e => setDraft({ ...draft, fusion: e.target.value })}><option value="weighted">가중합</option><option value="rrf">RRF 순위 결합</option></select></label>
         <label>근거 임계치<input aria-label="근거 임계치" type="number" min="0" max="1" step="0.01" required value={draft.threshold} onChange={e => setDraft({ ...draft, threshold: e.target.value })} /></label>
-        <p>임계치를 높이면 더 엄격하게 근거를 고릅니다. RRF는 조문 제목·본문의 검색 순위를 결합합니다.</p>
+        <p>임계치를 높이면 더 엄격하게 근거를 고릅니다. RRF는 법령명·조문 제목·본문의 검색 순위를 결합합니다.</p>
         <button className="apply-search-options" type="submit">적용</button>
       </form>
     </section>}

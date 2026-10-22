@@ -121,8 +121,8 @@ def test_existing_generated_indexes_are_ignored_without_reembedding(tmp_path, mo
     with monkeypatch.context() as patch:
         patch.setattr(reopened, 'connect', source_only_connection)
         after = reopened.search_enhanced('서류 제출', provider, **options)
-    assert before == after and after['rrf_fields'] == ['title', 'body']
-    assert after['rrf_max_score'] == pytest.approx(2/61)
+    assert before == after and after['rrf_fields'] == ['law_name', 'title', 'body']
+    assert after['rrf_max_score'] == pytest.approx(3/61)
     assert after['rrf']
     for hit in after['rrf']:
         assert not ({'metadata_score', 'summary_score', 'questions_score', 'matched_metadata'} & hit.keys())

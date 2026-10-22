@@ -36,7 +36,8 @@ def test_original_rewrite_union_and_law_names_never_narrow_scope(tmp_path):
     put(store,'합성 예외법',[('1','예외','소액임차인 우선변제 서울 기준을 정한다.')])
     result=store.search_enhanced('합성 주택법 보증금 반환',FakeProvider(),variants=['소액임차인 우선변제 서울'],mode='keyword')
     assert {r['law_name'] for r in result} == {'합성 주택법','합성 예외법'}
-    assert result[0]['law_name_score'] in (0,1)
+    assert all(0 <= r['law_name_score'] <= 1 for r in result)
+    assert next(r for r in result if r['law_name'] == '합성 주택법')['law_name_score'] == 1
     assert all(r['body'] for r in result)
 
 
