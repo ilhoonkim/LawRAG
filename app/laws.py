@@ -135,7 +135,7 @@ def reference_heading(number, title):
     return display + (f'({title})' if title and title not in (number, display) else '')
 
 
-def render_html(law: Law, *, reference_resolver=None, reference_date=None, delegation_links=None) -> str:
+def render_html(law: Law, *, reference_resolver=None, reference_date=None, delegation_links=None, reference_pending=False) -> str:
     esc = html.escape
     toc_parts, sections, target_styles = [], [], []
     last_chapter = ''
@@ -211,6 +211,8 @@ def render_html(law: Law, *, reference_resolver=None, reference_date=None, deleg
     def date_label(value):
         return f'{value[:4]}.{value[4:6]}.{value[6:]}' if re.fullmatch(r'\d{8}',value or '') else value or '미상'
     date_note = f'<span>참조 연결 기준일: {esc(reference_date.isoformat())}</span>' if reference_date else ''
+    if reference_pending:
+        date_note += '<span>상하위 문서 링크 준비 중 · 해당 세트의 HTML 링크 생성 완료 후 파일을 다시 열어 주세요.</span>'
     return f'''<!doctype html><html lang="ko" data-viewer-version="{VIEWER_VERSION}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(law.name)}</title>
 <style>{VIEWER_CSS}{''.join(target_styles)}</style></head><body>
 <header class="document-header"><h1>{esc(law.name)}</h1><p class="document-meta">[시행 {esc(date_label(law.effective))}] [공포·발령 {esc(date_label(law.promulgated))}]<a href="{esc(law.source_url,quote=True)}" target="_blank" rel="noopener noreferrer">법령정보센터 원문</a>{date_note}</p></header>

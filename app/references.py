@@ -51,6 +51,9 @@ def parse_annexes(root, law_name):
 # '같은 법', '영'처럼 확인이 필요한 표시는 graph.py에서 약칭 선언과 함께 해석합니다.
 # 완전한 법률 문법 분석기가 아니므로 불명확한 관계를 확정 사실로 다루면 안 됩니다.
 def reference_target(body, position, own_law):
+    # 범위·열거에서 생략된 법령명은 첫 인용에서 이어받습니다. 문장·줄바꿈을
+    # 넘거나 서술문을 건너뛰지 않으며, 긴 목록도 재귀 없이 처리합니다.
+    position = reference_head(body, position)
     prefix = re.split(r'[.\n。]', body[:position])[-1]
     if re.search(r'이\s*(?:법|영|규칙)\s*$', prefix):
         return own_law
@@ -70,6 +73,19 @@ def reference_target(body, position, own_law):
     return own_law
 
 
+def reference_head(body, position):
+    """'법 제4조부터 제11조까지'의 제11조는 제4조 앞의 '법'을 이어받습니다."""
+    pattern = r'제\s*\d+\s*조(?:\s*의\s*\d+)?|별표\s*\d+(?:\s*의\s*\d+)?'
+    connector = (r'\s*(?:제\s*\d+\s*(?:항|호)(?:\s*의\s*\d+)?\s*)*'
+                 r'(?:부터|내지|~|∼|및|또는|,|·|까지\s*(?:,|및|또는))\s*')
+    while True:
+        prefix = re.split(r'[.\n。]', body[:position])[-1]
+        matches = list(re.finditer(pattern, prefix))
+        if not matches or not re.fullmatch(connector, prefix[matches[-1].end():]):
+            return position
+        position = position - len(prefix) + matches[-1].start()
+
+
 def annex_references(body, own_law):
     result = set()
     for match in re.finditer(r'별표\s*(\d+)(?:\s*의\s*(\d+))?', body):
@@ -80,7 +96,7 @@ def annex_references(body, own_law):
     for match in re.finditer(r'별표\s*(\d+)\s*(?:부터|내지|~|∼)\s*(?:별표\s*)?(\d+)\s*(?:까지)?', body):
         first, last = map(int, match.groups())
         if 0 <= last-first <= 50:
-            target = next((law for number, law in result if number == f'별표 {first}'), own_law)
+            target = reference_target(body, match.start(), own_law)
             result.update((f'별표 {n}', target) for n in range(first,last+1))
     return sorted(result)
 
@@ -97,6 +113,7 @@ def article_links(body, own_law, source_number=''):
     for match in re.finditer(r'제\s*(\d+)\s*조\s*(?:부터|내지|~|∼)\s*(?:제\s*)?(\d+)\s*조(?:까지)?', body):
         first,last = map(int,match.groups())
         if 0 <= last-first <= 50:
-            target = next((law for number,law in result if number==f'제{first}조'),own_law)
-            result.update((f'제{n}조',target) for n in range(first,last+1) if f'제{n}조'!=source_number)
+            target = reference_target(body, match.start(), own_law)
+            result.update((f'제{n}조',target) for n in range(first,last+1)
+                          if f'제{n}조'!=source_number or target!=own_law)
     return sorted(result)

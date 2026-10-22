@@ -180,7 +180,8 @@ class Store:
         filename = f'{law.version}.html'
         # Immutable artifacts written before the DB transaction. Old citations survive refresh.
         self.archive_raw(raw)
-        (self.directory / 'html' / filename).write_text(render_html(law), encoding='utf-8')
+        (self.directory / 'html' / filename).write_text(
+            render_html(law, reference_pending=kind=='law'), encoding='utf-8')
         packed = [(i, a, sqlite_vec.serialize_float32(v) if v is not None else None,
                    provider.fingerprint if v is not None else None)
                   for i, (a, v) in enumerate(zip(law.articles, vectors))]
