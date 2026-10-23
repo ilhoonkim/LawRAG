@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 from .chat_pipeline import run_chat, source_key, review_limit
-from .config import Settings, SEARCH_FUSION, SEARCH_THRESHOLD
+from .config import Settings, SEARCH_FUSION, SEARCH_THRESHOLD, SEARCH_RELEVANCE_THRESHOLD
 from .laws import SetupError
 from .main import ChatRequest
 from .provider import Provider
@@ -19,7 +19,8 @@ from .temporal import resolve_date
 
 
 STAGES = {
-    'below_threshold': '임계치 미달', 'below_body_minimum': '본문 최소 일치 조건 미달',
+    'below_threshold': '1차 통과 점수 미달', 'below_body_minimum': '본문 최소 일치 조건 미달',
+    'below_relevance_threshold': 'RRF 관련도 기준 미달',
     'outside_field_pool': '필드별 검색 범위 밖', 'outside_candidate_limit': '검토 후보 수 제한',
     'selected': '검색 후보 선정', 'llm_rejected': 'LLM 관련성 검토에서 제외',
     'visible_source': '최종 출처 포함', 'llm_context_only': 'LLM 참고 문맥에만 포함',
@@ -40,6 +41,8 @@ def diagnose(store, provider, settings, question, *, mode='hybrid', chat=False,
             not articles or row['number'] in articles)
     report = {'question':question, 'as_of':cutoff.isoformat(), 'mode':mode,
               'chat_executed':chat, 'fusion':SEARCH_FUSION, 'threshold':SEARCH_THRESHOLD,
+              'threshold_basis':'admission_score', 'relevance_threshold':SEARCH_RELEVANCE_THRESHOLD,
+              'relevance_threshold_basis':'rrf_score',
               'created_at':datetime.now(timezone.utc).isoformat()}
     timeline = store.temporal_versions(cutoff)
     active_versions = {row['version'] for row in timeline['versions']}
@@ -62,6 +65,7 @@ def diagnose(store, provider, settings, question, *, mode='hybrid', chat=False,
         search_trace = {}
         store.search_enhanced(question,provider,cutoff=cutoff,mode=mode,
                               threshold=SEARCH_THRESHOLD,fusion=SEARCH_FUSION,
+                              rrf_threshold=SEARCH_RELEVANCE_THRESHOLD,
                               limit=review_limit(settings),diagnostics=search_trace)
         trace = {'searches':[search_trace], 'review_outcomes':[]}
     outcomes = {source_key(row):row['stage'] for row in trace['review_outcomes']}
@@ -104,6 +108,7 @@ def main():
         for row in search['candidates']:
             print(f'{row["law_name"]} {row["number"]}: {row["stage_description"]} · '
                   f'RRF 순위 {row["retrieval_rank"]} · 통과 점수 {row["admission_score"]:.3f} · '
+                  f'관련도 {row["rrf_score"]:.1%} · '
                   f'본문 핵심어 {", ".join(row["matched_focus_nouns"])}')
     print(f'진단 보고서: {args.output.resolve()}')
 

@@ -97,15 +97,16 @@ def test_equipment_number_article_survives_crowded_rrf_pool(tmp_path, question):
     assert hit['body'] == ARTICLE_57
 
 
-def test_protected_hits_still_require_llm_review_and_rejection_is_diagnosable(tmp_path):
+def test_rrf_cutoff_and_llm_rejection_are_distinct_in_diagnostics(tmp_path):
     class ReviewProvider(QueryProvider):
         def filter_evidence(self, question, candidates):
             assert len(candidates) <= 15
-            assert {'제58조', '제59조'} <= {row['number'] for row in candidates}
-            return [row for row in candidates if row['number'] == '제59조']
+            assert '제59조' in {row['number'] for row in candidates}
+            assert all(row['number'] != '제58조' and row['score'] >= .85 for row in candidates)
+            return [row for row in candidates if row['number'] != '제59조']
 
         def answer(self, question, evidence, *args, **kwargs):
-            assert all(row['number'] != '제58조' for row in evidence)
+            assert all(row['number'] not in ('제58조','제59조') for row in evidence)
             return '검토된 근거만 사용한 합성 답변'
 
     store = Store(tmp_path)
@@ -113,15 +114,16 @@ def test_protected_hits_still_require_llm_review_and_rejection_is_diagnosable(tm
     report = diagnose(store,ReviewProvider(),Settings(data_dir=tmp_path),DETECTOR_QUESTION,
                       chat=True,law=DETECTOR_LAW,articles=['제58조', '제59조'],as_of='2026-10-22')
     assert report['searches'][0]['total_scored'] == 82
-    assert report['searches'][0]['selected_count'] == 15
+    assert 0 < report['searches'][0]['selected_count'] <= 15
     outcomes = {row['number']:row['chat_stage'] for row in report['searches'][0]['candidates']}
-    assert outcomes == {'제58조':'llm_rejected', '제59조':'visible_source'}
+    assert outcomes == {'제58조':None, '제59조':'llm_rejected'}
+    assert next(r for r in report['searches'][0]['candidates'] if r['number']=='제58조')['stage'] == 'below_relevance_threshold'
     assert len(report['inventory']) == 2
     assert all(row['active_at_cutoff'] for row in report['inventory'])
     assert all('body' not in row and 'vector' not in row for row in report['searches'][0]['candidates'])
 
 
-def test_diagnostics_separate_missing_inactive_threshold_and_candidate_limit(tmp_path):
+def test_diagnostics_separate_missing_inactive_admission_and_relevance_cutoffs(tmp_path):
     store = Store(tmp_path)
     crowded_corpus(store, 'detector')
     put(store, '무관한 법률', [('1','주차장', '주차장 도로 시설')])
@@ -132,8 +134,8 @@ def test_diagnostics_separate_missing_inactive_threshold_and_candidate_limit(tmp
     report = diagnose(store,QueryProvider(),Settings(),DETECTOR_QUESTION)
     rows = report['searches'][0]['candidates']
     assert next(row for row in rows if row['number']=='제1조')['stage'] == 'below_threshold'
-    assert any(row['stage']=='outside_candidate_limit' for row in rows)
-    assert next(row for row in rows if row['number']=='제58조')['stage'] == 'selected'
+    assert any(row['stage']=='selected' for row in rows)
+    assert next(row for row in rows if row['number']=='제58조')['stage'] == 'below_relevance_threshold'
     past = diagnose(store,QueryProvider(),Settings(),DETECTOR_QUESTION,as_of='2019-01-01')
     assert all(not row['active_at_cutoff'] for row in past['inventory'])
     assert not past['searches'][0]['candidates']
@@ -163,7 +165,7 @@ def test_law_name_or_title_only_never_qualifies_for_noun_reserve(tmp_path):
     assert trace['candidates'][0]['body_focus_score'] == 0
 
 
-def test_protected_candidates_survive_additional_search_merge(tmp_path):
+def test_additional_search_preserves_relevance_cutoff_and_reviews_each_hit_once(tmp_path):
     class GapProvider(QueryProvider):
         def __init__(self):
             super().__init__()
@@ -172,6 +174,7 @@ def test_protected_candidates_survive_additional_search_merge(tmp_path):
 
         def filter_evidence(self, question, candidates):
             assert len(candidates) <= 15
+            assert all(row['score'] >= .85 for row in candidates)
             self.reviewed.extend(row['number'] for row in candidates)
             return candidates
 
@@ -181,11 +184,13 @@ def test_protected_candidates_survive_additional_search_merge(tmp_path):
                     'missing_facts':[], 'search_queries':['소형어선 건조 적용례 부칙']}
 
         def answer(self, question, evidence, *args, **kwargs):
-            assert {'제58조','제59조'} <= {row['number'] for row in evidence}
+            assert '제59조' in {row['number'] for row in evidence}
+            assert all(row['number'] != '제58조' and row['score'] >= .85 for row in evidence)
             return '적용 시점은 미확인'
 
     store, provider = Store(tmp_path), GapProvider()
     crowded_corpus(store, 'detector')
     result = run_chat(store,provider,Settings(data_dir=tmp_path),ChatRequest(question=DETECTOR_QUESTION))
     assert result['additional_search_rounds'] == 1
-    assert provider.reviewed.count('제58조') == provider.reviewed.count('제59조') == 1
+    assert provider.reviewed.count('제58조') == 0
+    assert provider.reviewed.count('제59조') == 1

@@ -55,7 +55,7 @@ def test_top_15_each_round_and_references_only_in_final_context(extra):
     result = run_chat(store,provider,Settings(candidate_limit=50),
                       ChatRequest(question='관련 서류',limit=10,threshold=.68,fusion='weighted'))
     # 이전 클라이언트의 옵션은 최초 검색과 추가 검색 모두에 영향을 주지 않습니다.
-    assert all(call['limit']==15 and call['threshold']==.3 and call['fusion']=='rrf'
+    assert all(call['limit']==15 and call['threshold']==.3 and call['fusion']=='rrf' and call['rrf_threshold']==.85
                for call in store.search_calls)
     assert result['fusion']=='rrf'
     assert len(provider.review_calls)==(2 if extra else 1)

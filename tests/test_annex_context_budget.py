@@ -1,5 +1,6 @@
 """Explicit annex dependencies survive budget selection without truncating tables."""
 from datetime import date
+from xml.sax.saxutils import escape
 
 import pytest
 
@@ -7,10 +8,11 @@ from app.chat_pipeline import budgeted, trim_token_context, run_chat
 from app.context_selection import evidence_units
 from app.config import Settings
 from app.main import ChatRequest
+from app.provider import Provider
 from app.store import Store
 from app.vllm_context import ContextBudgetExceeded
 from test_chat_pipeline import row
-from test_enhanced_retrieval import source
+from test_enhanced_retrieval import source, put
 from test_references import referenced_raw
 from test_workflow import FakeProvider
 
@@ -127,3 +129,43 @@ def test_actual_answer_receives_retained_table_and_link_metadata(stage):
     summary = next(r for r in trace['answer_context'] if r['number']=='별표 14')
     assert summary['body_chars'] == len(table['body']) and summary['image_placeholders']==0
     assert 'body' not in summary
+
+
+@pytest.mark.parametrize('has_text',[True,False])
+@pytest.mark.parametrize('stream',[True,False])
+def test_fixed_relevance_policy_sends_available_annex_body_to_actual_answer_prompt(tmp_path,has_text,stream):
+    """Real ingestion/search/graph/prompt; only the external model response is mocked."""
+    store = Store(tmp_path)
+    table_text = '구간 | 질량(kg) | 수량(개)\n50 이상 100 미만 | 12 | 2\n주: 예비용 1개 별도.\n계산식: M = 2 × E.'
+    xml_annex = ('<별표><별표단위><별표번호>14</별표번호><별표제목>합성 수량표</별표제목>'
+                 f'<별표내용>{escape(table_text) if has_text else ""}</별표내용>'
+                 '<별표PDF파일링크>/example.pdf</별표PDF파일링크></별표단위></별표>')
+    put(store,'합성기준',[('1','설비 수량','설비 수량은 별표 14에 따른다.')],annex=xml_annex)
+    model = Provider(Settings(chat_backend='company',company_chat_model='test-company-model'))
+    requests = []
+    def capture(messages):
+        requests.append(messages)
+        return '합성 모델 응답 [1]' + ('[C1]' if has_text else '')
+    model.post = lambda path,body: {'choices':[{'message':{'content':capture(body['messages'])}}]}
+    if stream:
+        model._on_answer_text = lambda chunk: None
+        model.stream_completion = lambda messages,on_text: capture(messages)
+    class Model(FakeProvider):
+        def answer(self,*args,**kwargs):
+            return model.answer(*args,**kwargs)
+    result = run_chat(store,Model(),Settings(data_dir=tmp_path),
+                      ChatRequest(question='합성기준 설비 수량은?',mode='keyword'))
+    assert result['generated'] and all(e['score'] >= .85 for e in result['evidence'])
+    assert len(requests)==1
+    system,context = requests[0][0]['content'],requests[0][-1]['content']
+    assert '수치·산식·수량·구간·단서' in system
+    assert '제목·링크만 있거나' in system
+    if has_text:
+        assert table_text in context  # 수치·단위·경계·주석·산식이 잘리지 않습니다.
+        assert '연결 참조 C1: 합성기준 별표 14' in context
+        assert result['linked_sources']['C1']['number']=='별표 14'
+        assert any(r['number']=='별표 14' for r in result['review_trace']['answer_context'])
+    else:
+        assert table_text not in context and '연결 참조 C1:' not in context
+        assert not result['linked_sources']
+        assert any(r['number']=='별표 14' for r in result['missing_references'])

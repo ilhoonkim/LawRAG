@@ -1,7 +1,7 @@
 """Verified retrieval with bounded graph expansion and one gap-driven search."""
 import re
 from datetime import datetime, timezone
-from .config import SEARCH_FUSION, SEARCH_THRESHOLD
+from .config import SEARCH_FUSION, SEARCH_THRESHOLD, SEARCH_RELEVANCE_THRESHOLD
 from .temporal import resolve_date
 from .retrieval import select_candidates
 from .vllm_context import ContextBudgetExceeded
@@ -39,7 +39,7 @@ def retrieve(store, provider, settings, body, *, variants=None, limit=None, expa
     missing = [r for r in timeline['missing'] if r['name'] in named]
     evidence = store.search_enhanced(body.question,provider,variants=variants or (),cutoff=cutoff,
         threshold=SEARCH_THRESHOLD, limit=limit or body.limit,
-        mode=body.mode,fusion=SEARCH_FUSION,
+        mode=body.mode,fusion=SEARCH_FUSION,rrf_threshold=SEARCH_RELEVANCE_THRESHOLD,
         **({'diagnostics':diagnostics} if diagnostics is not None else {}))
     evidence, missing_refs = store.expand_context(evidence,cutoff=cutoff,question=body.question,
         limit=min(80,max(0,settings.reference_limit))) if expand else (evidence,[])
@@ -288,6 +288,8 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None, *, di
         'created_at':datetime.now(timezone.utc).isoformat(),
         'rewritten_query':rewritten,'additional_queries':extra_queries if rounds else [],
         'fusion':SEARCH_FUSION,'threshold':SEARCH_THRESHOLD,
+        'threshold_basis':'admission_score','relevance_threshold':SEARCH_RELEVANCE_THRESHOLD,
+        'relevance_threshold_basis':'rrf_score',
         'candidate_note':'검색에서 반환된 후보 목록입니다. 전체 자료의 점수·순위는 diagnose_search로 확인합니다.',
         'retrieved_candidates':[{k:e.get(k) for k in (
             'version','law_name','number','title','score','rrf_score','admission_score',

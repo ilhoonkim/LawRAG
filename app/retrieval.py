@@ -141,7 +141,7 @@ def field_rrf(per_query, mode, exact_ids=(), constant=60, depth=50):
     return combined, ranks
 
 
-def select_candidates(rows, limit):
+def select_candidates(rows, limit, *, min_score=0):
     """RRF 순서를 유지하되 최대 1/3은 원질의의 핵심 본문 일치에 배정합니다.
 
     총 검토 수는 늘리지 않습니다. 임계치를 통과한 후보만 입력하며, 나머지는
@@ -149,7 +149,8 @@ def select_candidates(rows, limit):
     """
     key = lambda row: (-row.get('score', 0), -row.get('weighted_score', 0),
                        row.get('id', ''), row.get('version', ''), row.get('number', ''))
-    ordered = sorted(rows, key=key)
+    # 핵심 명사·직접 조번호 보호도 화면 관련도 기준을 우회하지 않습니다.
+    ordered = sorted((r for r in rows if r.get('score', 0) >= min_score), key=key)
     # 사용자가 직접 법령+조번호를 지정한 조회는 키워드 보호보다 먼저 보존합니다.
     chosen = {(r['version'], r['number']): r for r in ordered if r.get('exact_identifier')}
     focused = sorted((r for r in ordered if r.get('body_focus_score', 0) > 0),
@@ -166,13 +167,15 @@ def select_candidates(rows, limit):
 
 
 def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48,
-           limit=20, mode='hybrid', fusion='weighted', compare=False, diagnostics=None):
-    if fusion not in ('weighted','rrf') or not 0 <= threshold <= 1:
+           limit=20, mode='hybrid', fusion='weighted', compare=False, diagnostics=None,
+           rrf_threshold=0):
+    if fusion not in ('weighted','rrf') or not 0 <= threshold <= 1 or not 0 <= rrf_threshold <= 1:
         raise ValueError('검색 결합 방식 또는 임계치가 올바르지 않습니다.')
     cutoff = cutoff or today_in_korea()
     selected = store.temporal_versions(cutoff)['versions']
     queries = list(dict.fromkeys([question, *variants]))
     fusion_metadata = {'queries': queries, 'threshold_basis': 'admission_score',
+                       'relevance_threshold': rrf_threshold, 'relevance_threshold_basis': 'rrf_score',
                        'rrf_constant': 60, 'rrf_fields': ['law_name', 'title', 'body'],
                        'rrf_strategy': 'field_hierarchical', 'rrf_max_score': 1/61,
                        'rrf_field_weights': dict(RRF_WEIGHTS),
@@ -311,17 +314,18 @@ def search(store, question, provider, *, variants=(), cutoff=None, threshold=.48
             diagnostic['stage'] = ('below_threshold' if not best['eligible'] and max(s['admission'] for s in observations) < threshold
                                    else 'below_body_minimum' if not best['eligible']
                                    else 'outside_field_pool' if row['id'] not in rrf
+                                   else 'below_relevance_threshold' if fusion == 'rrf' and out['rrf_score'] < rrf_threshold
                                    else 'outside_candidate_limit')
             diagnostics['candidates'].append(diagnostic)
         if best['eligible'] and row['id'] in rrf:
             result.append(out)
     # UI는 계산 방식과 무관하게 score를 '관련도 점수'로 표시합니다.
-    # compare도 같은 후보·같은 계산 결과에서 정렬 방식만 달리해 비교합니다.
+    # compare도 같은 1차 후보에서 계산하되 RRF에는 별도 표시 점수 기준을 적용합니다.
     def ranked(method):
         ordered = sorted(result,key=lambda r:(-r[method+'_score'],-r['weighted_score'],r['id']))
         ranked_rows = [{**r,'score':r[method+'_score'],'fusion':method,'retrieval_rank':i}
                        for i,r in enumerate(ordered,1)]
-        return select_candidates(ranked_rows,limit) if method == 'rrf' else ranked_rows[:limit]
+        return select_candidates(ranked_rows,limit,min_score=rrf_threshold) if method == 'rrf' else ranked_rows[:limit]
     selected_rows = ranked(fusion)
     if diagnostics is not None:
         selected_ids = {row['id'] for row in selected_rows}

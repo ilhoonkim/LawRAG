@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from .config import Settings, SEARCH_FUSION, SEARCH_THRESHOLD
+from .config import Settings, SEARCH_FUSION, SEARCH_THRESHOLD, SEARCH_RELEVANCE_THRESHOLD
 from .laws import LawAPI, SetupError, parse_law, parse_admrul, render_html, VIEWER_VERSION
 from .provider import Provider
 from .store import Store
@@ -84,6 +84,8 @@ def create_app(settings=None, provider=None, law_api=None):
                 'chat_backend':settings.endpoint('chat').backend, 'embedding_backend':settings.endpoint('embedding').backend,
                 'embedding_model':settings.endpoint('embedding').model,
                 'threshold': SEARCH_THRESHOLD, 'chat_model': settings.active_chat_model,
+                'threshold_basis': 'admission_score', 'relevance_threshold': SEARCH_RELEVANCE_THRESHOLD,
+                'relevance_threshold_basis': 'rrf_score',
                 'search_fusion': SEARCH_FUSION, 'laws': store.list_laws()}
 
     @app.get('/api/laws/search')

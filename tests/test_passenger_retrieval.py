@@ -121,7 +121,8 @@ def test_passenger_candidate_set_reaches_review_and_only_approved_scope_is_visib
             assert question == QUESTION
             assert len(candidates) <= 15
             assert {row['number'] for row in candidates if row['law_name']==GENERAL} == {
-                '제8조','제9조','제10조','제12조','제17조'}
+                '제9조','제10조','제17조'}
+            assert all(row['score'] >= .85 for row in candidates)
             assert all(row['law_name'] and row['body'] for row in candidates)
             # 실제 GPT 판정의 정확도를 주장하는 테스트가 아닙니다. 검토기가
             # 적용 대상이 다른 후보를 거절했을 때 답변/출처로 우회 복귀하지
@@ -138,6 +139,7 @@ def test_passenger_candidate_set_reaches_review_and_only_approved_scope_is_visib
         response = client.post('/api/chat',json={'question':QUESTION,'model':'gpt-4.1'})
     assert response.status_code == 200
     result = response.json()
-    assert result['generated'] and len(result['evidence']) == 5
+    # 8·12조는 이 합성 자료에서 85% 미달입니다. 명사 일치만으로 우회시키지 않습니다.
+    assert result['generated'] and len(result['evidence']) == 3
     assert all(row['relevance_checked'] and row['law_name']==GENERAL for row in result['evidence'])
     assert all(row['rrf_field_weights'] == {'body':.6,'title':.3,'law_name':.1} for row in result['evidence'])

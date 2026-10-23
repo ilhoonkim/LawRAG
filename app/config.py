@@ -16,7 +16,9 @@ load_dotenv(ROOT / '.env')
 
 # 웹 검색·채팅의 고정 정책입니다. 환경변수나 사용자 요청으로 변경하지 않습니다.
 SEARCH_FUSION = 'rrf'
+# 1차 검색 신호의 통과 점수와 화면에 표시하는 RRF 관련도는 별개입니다.
 SEARCH_THRESHOLD = 0.3
+SEARCH_RELEVANCE_THRESHOLD = 0.85
 
 
 def ai_key_source():

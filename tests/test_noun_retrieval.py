@@ -111,24 +111,22 @@ def test_article_58_reaches_top_candidates_with_weak_embedding_and_generic_title
         assert vectors == list(map(tuple, db.execute('SELECT vector,title_vector FROM version_articles ORDER BY position')))
 
 
-def test_matched_article_is_reviewed_by_llm_and_remains_an_original_source(tmp_path):
+def test_web_relevance_cutoff_also_excludes_weak_rrf_noun_matches(tmp_path):
     class Provider(QueryProvider):
         def filter_evidence(self, question, candidates):
-            assert len(candidates) <= 15
-            assert any(e['number'] == '제58조' for e in candidates)
-            return [e for e in candidates if e['number'] in ('제58조', '제59조')]
+            pytest.fail('본문 명사만으로는 이 합성 자료에서 RRF 85%를 넘지 못합니다.')
 
         def answer(self, question, evidence, history, **kwargs):
-            assert any(e['number'] == '제58조' and '단독경보형감지기' in e['body'] for e in evidence)
-            return '설치 요건은 확인되지만 건조 적용 시점은 추가 근거가 필요합니다. [1]'
+            pytest.fail('점수 기준을 통과한 근거가 없으면 답변을 생성하지 않습니다.')
 
     app = create_app(Settings(data_dir=tmp_path), Provider(), object())
     corpus(app.state.store)
+    loose = app.state.store.search_enhanced(QUESTION,QueryProvider(),threshold=.3,fusion='rrf',limit=15)
+    hit = next(e for e in loose if e['number']=='제58조')
+    assert hit['admission_score'] >= .3 and hit['rrf_score'] < .85
     with TestClient(app) as client:
         response = client.post('/api/chat', json={'question': QUESTION})
     assert response.status_code == 200
     result = response.json()
-    assert result['generated'] and result['fusion'] == 'rrf'
-    hit = next(e for e in result['evidence'] if e['number'] == '제58조')
-    assert hit['law_name'] == NAME and hit['relevance_checked']
-    assert '/documents/' in hit['html_url']
+    assert not result['generated'] and result['fusion'] == 'rrf'
+    assert result['evidence'] == []

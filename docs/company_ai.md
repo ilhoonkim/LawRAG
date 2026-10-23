@@ -2,6 +2,46 @@
 
 기존 OpenAI 설정을 유지하면서 채팅과 임베딩을 각각 회사 서버로 전환할 수 있습니다. 이 문서는 **OpenAI 호환 HTTP API** 설정을 설명합니다. NSE의 고유 RabbitMQ 채팅은 [LOCAL_MODEL 설정·통신 점검](nse_mq.md)을 참고하세요. 두 방식 모두 기존 임베딩을 유지할 수 있습니다.
 
+## 회사 LLM 호출 코드 재사용
+
+현재 `CHAT_BACKEND=company`는 MQ를 거치지 않고 `COMPANY_CHAT_BASE_URL`의 `/chat/completions`에 HTTP로 요청합니다. `BASE_URL`에 `/v1`이 포함되므로 실제 경로는 `/v1/chat/completions`입니다. 모델은 `COMPANY_CHAT_MODEL`을 사용하며 `physical_model_id`는 보내지 않습니다.
+
+| 코드 | 역할 |
+| --- | --- |
+| [config.py](../app/config.py)의 `Settings.endpoint('chat')` | 회사/OpenAI 서버 주소·모델·인증 선택 |
+| [provider.py](../app/provider.py)의 `Provider.post()` | 일반 요청 전송, JSON 응답 반환, 오류·재시도 처리 |
+| 같은 파일의 `Provider.stream_completion()` | `stream: true` 전송, SSE 응답 수신 |
+| [chat_stream.py](../app/chat_stream.py)의 `stream_answer()` | SSE의 `choices[0].delta.content`를 콜백으로 전달하고 전체 답변 조립 |
+| [vllm_context.py](../app/vllm_context.py) | 회사 vLLM의 입력 토큰·출력 여유 확인 |
+| [chat_pipeline.py](../app/chat_pipeline.py)의 `run_chat()` | 검색·검토·참조 확장·입력 예산 조정 후 답변 호출 |
+
+LawRAG 프로젝트 안의 다른 Python 코드에서는 다음처럼 재사용합니다. `local.env`의 회사 연결 설정을 먼저 지정하세요. 이 예시는 검색·DB·임베딩을 호출하지 않습니다.
+
+```python
+from app.config import Settings
+from app.provider import Provider
+
+provider = Provider(Settings())
+messages = [
+    {"role": "system", "content": "한국어로 간결하게 답하세요."},
+    {"role": "user", "content": "벡터 검색을 한 문장으로 설명해 주세요."},
+]
+
+# 새 텍스트 조각이 도착할 때마다 실행됩니다. 반환값은 전체 답변입니다.
+answer = provider.stream_completion(
+    messages, lambda chunk: print(chunk, end="", flush=True)
+)
+print()
+
+# 스트리밍 없이 JSON 응답을 받으려면 위 호출 대신 아래를 사용합니다.
+# data = provider.post("/chat/completions", {
+#     "model": provider.chat_model, "messages": messages, "temperature": 0.1
+# })
+# answer = data["choices"][0]["message"]["content"]
+```
+
+`Provider`는 다른 앱 모듈에 의존하므로 파일 하나만 복사하는 독립 SDK는 아닙니다. 별도 프로젝트에서 HTTP 직접 호출을 구현하려면 `stream_completion()`의 요청 형식과 `chat_stream.py`의 SSE 처리를 참고하세요. 각 콜백은 한 글자가 아니라 서버가 보낸 텍스트 조각입니다. `COMPANY_CHAT_MAX_TOKENS=auto`는 vLLM의 `/v1/models`·`/tokenize` 지원이 필요합니다. 직접 `Provider`를 호출하면 초과 입력을 자동으로 줄이지 않고 `ContextBudgetExceeded`를 발생시키며, LawRAG의 후보 축소는 `run_chat()`이 담당합니다.
+
 ## bge-m3-ko vLLM 직접 연결
 
 `EMBEDDING_BACKEND=vllm`은 **LawRAG → HTTP `/v1/embeddings` → vLLM** 경로로 호출합니다. 임베딩 수집·재색인·질문 검색에 모두 같은 연결을 사용합니다. MQ 접속정보, NSE 요청 큐, `physical_model_id`는 필요 없습니다. 기존 `company` HTTP 설정과 같은 `COMPANY_EMBEDDING_*` 항목을 사용합니다. `local_embedding`/`LOCA_EMBEDDING`은 기존 MQ 방식이므로 직접 연결할 때는 `vllm`을 선택하세요.
