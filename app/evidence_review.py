@@ -5,6 +5,7 @@ import logging
 import re
 from time import perf_counter
 from .laws import SetupError
+from .vllm_context import ContextBudgetExceeded
 
 logger = logging.getLogger(__name__)
 # 관련성 검토는 후보를 한 건씩 순차 호출하지 않고 묶음으로 처리합니다.
@@ -145,7 +146,27 @@ def filter_evidence(provider, question, candidates):
                             {'role':'user','content':json.dumps(payload,ensure_ascii=False)}]}
             if provider.settings.chat_backend == 'openai' and model.startswith('gpt-5'):
                 request.update(reasoning_effort='low',max_completion_tokens=8192)
-            data = provider.post('/chat/completions',request)
+            try:
+                data = provider.post('/chat/completions',request)
+            except ContextBudgetExceeded as error:
+                # The preflight made no generation request. Keep the ranked
+                # prefix and rebuild IDs/schema from its complete articles.
+                candidate = batch[-1][0]
+                omission = {**{k:candidate.get(k,'') for k in ('version','law_name','number')},
+                    'phase':phase,'model':model,'relevant':None,'role':'not_reviewed','conditions':[],
+                    'status':'token_budget_excluded','reason':'토큰 한도로 전체 조문을 입력에서 제외함',
+                    **error.details()}
+                if len(batch) == 1:
+                    return {}, [omission]
+                accepted, audit = verify(batch[:-1],phase)
+                if all(entry.get('status') == 'token_budget_excluded' for entry in audit):
+                    # The highest article cannot fit even alone. Skip it rather
+                    # than losing every smaller article behind it as well.
+                    tail_accepted, tail_audit = verify(batch[1:],phase)
+                    first = next(entry for entry in audit if
+                        all(entry[k] == batch[0][0].get(k,'') for k in ('version','law_name','number')))
+                    return {i+1:meta for i,meta in tail_accepted.items()}, [first]+tail_audit
+                return accepted, audit + [omission]
             try:
                 judgments = {}
                 accepted = parse_decisions(data,len(batch),outcomes=judgments)

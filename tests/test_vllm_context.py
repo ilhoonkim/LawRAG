@@ -45,7 +45,7 @@ def test_actual_deployment_limit_minus_tokenized_prompt_used_for_json_and_stream
     assert sum(request.method == 'GET' for request in calls) == 2
 
 
-@pytest.mark.parametrize('tokens', [12288, 13000])
+@pytest.mark.parametrize('tokens', [11288, 12288, 13000])
 def test_oversized_prompt_fails_before_generation_without_dropping_input(monkeypatch, tokens):
     messages = []
     def handle(request):

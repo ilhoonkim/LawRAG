@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from .config import SEARCH_FUSION, SEARCH_THRESHOLD
 from .temporal import resolve_date
 from .retrieval import select_candidates
+from .vllm_context import ContextBudgetExceeded
 
 # 채팅의 전체 흐름: 기준일 확정 → 원질의+재작성 검색 → 후보 검토 → 연결 조문 확장
 # → 연결 조문 검토 → 근거 충분성 점검 → 필요 시 한 번 더 검색 → 확보한 본문으로 답변 생성.
@@ -60,6 +61,41 @@ def budgeted(evidence, max_chars):
     return selected,missing
 
 
+def trim_token_context(evidence, missing, omissions, error, stage):
+    """Remove one complete low-priority document, keeping source labels rebuildable."""
+    if not evidence:
+        raise error
+    # Reference scores can be inherited from a parent. Preserve independently
+    # retrieved articles before linked context, then preserve higher scores.
+    removed = max(evidence,key=lambda e:(bool(e.get('relation')),-e.get('score',0),source_key(e)))
+    evidence.remove(removed)
+    gap = {k:removed[k] for k in ('version','law_name','number')}
+    gap.update(reason='토큰 한도로 전체 조문을 입력에서 제외함',stage=stage,**error.details())
+    missing.append(gap)
+    omissions.append(gap)
+    valid = {source_key(e) for e in evidence}
+    for e in evidence:
+        e['reference_titles'] = [r for r in e.get('reference_titles',[]) if
+            (r.get('version',e['version']),r['law_name'],r['number']) in valid]
+
+
+def assess_with_budget(provider, question, evidence, missing, as_of, omissions):
+    while True:
+        try:
+            return provider.assess_evidence(question,evidence,missing,as_of)
+        except ContextBudgetExceeded as error:
+            trim_token_context(evidence,missing,omissions,error,'assess')
+
+
+def review_budget_gaps(provider):
+    gaps = {}
+    for entry in getattr(provider,'evidence_review_log',[]):
+        if entry.get('status') == 'token_budget_excluded':
+            gaps[source_key(entry)] = {k:entry[k] for k in (
+                'version','law_name','number','reason','input_tokens','context_tokens','output_reserve')}
+    return list(gaps.values())
+
+
 def filter_once(provider, question, candidates, checked, rejected):
     """같은 질문·버전·조문은 한 번만 검토합니다. 검색 점수와 연결 경로는 캐시하지 않습니다."""
     pending = [e for e in candidates if source_key(e) not in checked and source_key(e) not in rejected]
@@ -89,7 +125,7 @@ def review(store, provider, settings, question, candidates, cutoff, rejected, *,
     # 탈락 기록은 추가 검색에도 유지됩니다. 같은 후보가 연결 조문으로 우회 복귀하지 못합니다.
     rejected.update({source_key(e) for e in selected} - {source_key(e) for e in reviewed})
     if not reviewed:
-        return [], []
+        return [], review_budget_gaps(provider)
     # 통과한 검색 근거에서만 확장합니다. 위임·상하위 연결 자체가 질의 관련성을
     # 보장하지 않으므로 표시 대상 연결 조문은 별도 묶음으로 검토합니다.
     expanded, missing = store.expand_context(reviewed,cutoff=cutoff,question=question,
@@ -123,11 +159,12 @@ def review(store, provider, settings, question, candidates, cutoff, rejected, *,
     # Missing refs from rejected parents cannot alone suppress the final answer.
     parent_keys = {(e['version'],e['number']) for e in evidence}
     missing = [r for r in missing if not r.get('from_article') or (r['version'],r['from_article']) in parent_keys]
-    return evidence,missing+omitted+deferred
+    return evidence,missing+omitted+deferred+review_budget_gaps(provider)
 
 
 def run_chat(store, provider, settings, body, progress=lambda stage: None, *, diagnostics=None):
     provider.evidence_review_log = []
+    token_omissions = []
     cutoff, clarification = resolve_date(body.question, body.as_of)
     if clarification:
         return {'evidence': [], 'answer': clarification, 'clarification': clarification,
@@ -149,7 +186,7 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None, *, di
     catalog_gaps = [{'law_name':r['name'],'number':'기준일 적용 버전','reason':'질문에 명시된 법령의 적용 버전이 미수집입니다.'} for r in result['missing_versions']]
     missing += catalog_gaps
     progress('assess')
-    assessment = provider.assess_evidence(body.question,evidence,missing,result['as_of'])
+    assessment = assess_with_budget(provider,body.question,evidence,missing,result['as_of'],token_omissions)
     initial_assessment = assessment
     normalize = lambda text: re.sub(r'[\W_]+','',text).casefold()
     used = {normalize(body.question),normalize(rewritten)}
@@ -183,10 +220,33 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None, *, di
         evidence, missing = review(store,provider,settings,body.question,list(merged.values()),cutoff,rejected,checked=checked,progress=progress)
         missing += catalog_gaps
         progress('assess')
-        assessment = provider.assess_evidence(body.question,evidence,missing,result['as_of'])
+        assessment = assess_with_budget(provider,body.question,evidence,missing,result['as_of'],token_omissions)
     # 검색 근거와 표시 대상으로 지정한 상하위 조문은 같은 순서로 숫자 인용을 받습니다.
     # 일반 참고 문맥은 LLM에만 전달합니다. Provider와 UI의 번호가 이 순서와 일치합니다.
     evidence.sort(key=lambda e:(-e.get('score',0),bool(e.get('relation')),source_key(e)))
+    answer = None
+    history = [m.model_dump() for m in body.history][-6:]
+    omitted_history = 0
+    if evidence:
+        progress('answer')
+        question = f'기준일: {result["as_of"]} (이 날짜에 시행 중인 수집 버전 기준)\n{body.question}'
+        while evidence:
+            try:
+                answer = provider.answer(question,evidence,history,missing_references=missing,assessment=assessment)
+                break
+            except ContextBudgetExceeded as error:
+                # The exception is only raised by the preflight, before any
+                # answer token is streamed. Never restart a partially sent answer.
+                if history:
+                    history.pop(0)
+                    omitted_history += 1
+                    continue
+                trim_token_context(evidence,missing,token_omissions,error,'answer')
+                # An earlier sufficiency judgment covered a larger set. Do not
+                # reuse its "sufficient" conclusion after excluding a source.
+                assessment = {**assessment,'sufficient':False,
+                    'missing_issues':list(dict.fromkeys(assessment['missing_issues'] +
+                        ['입력 토큰 한도로 일부 근거가 제외되었습니다. 확보된 본문으로 답할 수 있는 부분만 답하세요.']))[:8]}
     # 상하위 연결은 출처에 포함하고 일반 연결 문맥만 숨깁니다.
     # approved_count에는 검토를 통과한 후보에서 확장한 연결 문맥도 포함됩니다.
     visible_evidence = [e for e in evidence if not e.get('relation') or e.get('include_in_sources')]
@@ -197,11 +257,13 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None, *, di
         for i,e in enumerate((e for e in evidence if e.get('relation') and not e.get('include_in_sources')),1)}
     visible_keys = {source_key(e) for e in visible_evidence}
     context_keys = {source_key(e) for e in evidence}
+    token_keys = {source_key(e) for e in review_budget_gaps(provider)+token_omissions}
     outcomes = [
         {'version':key[0], 'law_name':key[1], 'number':key[2],
-         'stage':('llm_rejected' if key in rejected else 'visible_source' if key in visible_keys
-                  else 'llm_context_only' if key in context_keys else 'approved_but_omitted')}
-        for key in sorted(set(checked) | rejected)]
+         'stage':('visible_source' if key in visible_keys else 'llm_context_only' if key in context_keys
+                  else 'token_budget_excluded' if key in token_keys else 'llm_rejected' if key in rejected
+                  else 'approved_but_omitted')}
+        for key in sorted(set(checked) | rejected | token_keys)]
     review_trace = {
         'policy':'rejection_recheck_v1','question':body.question,'as_of':result['as_of'],
         'created_at':datetime.now(timezone.utc).isoformat(),
@@ -213,11 +275,14 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None, *, di
             'body_semantic_score','body_keyword_score','title_semantic_score','matched_body_nouns')}
             for e in candidates],
         'decisions':list(provider.evidence_review_log), 'review_outcomes':outcomes,
+        'token_budget_omissions':review_budget_gaps(provider)+token_omissions,
+        'history_messages_omitted':omitted_history,
         'missing_references':missing,'assessment':assessment,
     }
     if diagnostics is not None:
         diagnostics['review_outcomes'] = outcomes
         diagnostics['review_decisions'] = list(provider.evidence_review_log)
+        diagnostics['token_budget_omissions'] = review_budget_gaps(provider)+token_omissions
         diagnostics['missing_references'] = missing
     result.update(evidence=visible_evidence,linked_sources=linked_sources,review_trace=review_trace,
         missing_references=missing,rewritten_query=rewritten,
@@ -231,11 +296,9 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None, *, di
             targets = ', '.join(dict.fromkeys(f'{r["name"]} (시행 {r["effective"][:4]}-{r["effective"][4:6]}-{r["effective"][6:8]})' for r in result['missing_versions']))
             answer = f'질문한 법령의 기준일({result["as_of"]}) 적용 버전이 미수집 상태입니다: {targets}. 법령관리에서 이 버전을 수집한 뒤 다시 질문해 주세요.'
         else:
-            answer = '수집된 법령에서 질문에 답할 만한 근거 조문을 찾지 못했습니다. 어떤 상황인지 조금 더 자세히 알려주세요.'
+            answer = ('모델의 입력 토큰 한도 안에 넣을 수 있는 근거 조문이 남지 않았습니다. 질문 범위를 좁히거나 더 큰 문맥을 지원하는 모델을 사용해 주세요.'
+                      if token_keys else '수집된 법령에서 질문에 답할 만한 근거 조문을 찾지 못했습니다. 어떤 상황인지 조금 더 자세히 알려주세요.')
         if assessment['missing_facts']:
             answer += '\n확인이 필요한 정보: ' + ', '.join(assessment['missing_facts'])
         return {**result,'answer':answer,'generated':False}
-    progress('answer')
-    question = f'기준일: {result["as_of"]} (이 날짜에 시행 중인 수집 버전 기준)\n{body.question}'
-    answer = provider.answer(question,evidence,[m.model_dump() for m in body.history],missing_references=missing,assessment=assessment)
     return {**result,'answer':answer,'generated':True}

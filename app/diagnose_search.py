@@ -24,6 +24,7 @@ STAGES = {
     'selected': '검색 후보 선정', 'llm_rejected': 'LLM 관련성 검토에서 제외',
     'visible_source': '최종 출처 포함', 'llm_context_only': 'LLM 참고 문맥에만 포함',
     'approved_but_omitted': '검토 통과 후 문맥 예산 또는 재선정에서 제외',
+    'token_budget_excluded': '토큰 한도로 입력에서 제외',
 }
 
 
@@ -74,6 +75,7 @@ def diagnose(store, provider, settings, question, *, mode='hybrid', chat=False,
     report.update(trace)
     report['review_outcomes'] = [row for row in trace['review_outcomes'] if matches(row)]
     report['review_decisions'] = [row for row in trace.get('review_decisions',[]) if matches(row)]
+    report['token_budget_omissions'] = [row for row in trace.get('token_budget_omissions',[]) if matches(row)]
     report['inventory_note'] = ('자료가 없습니다. HTML 파일 존재 여부와 DB 수집 완료 여부는 다릅니다.'
                                 if not inventory else 'active_at_cutoff=false인 버전은 이 기준일의 검색 대상이 아닙니다.')
     return report
