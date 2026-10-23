@@ -134,7 +134,9 @@ def test_filter_reads_full_bodies_batches_and_keeps_original_data(monkeypatch):
     monkeypatch.setattr(provider,'post',post)
     candidates = [row(i,.9, '본문' * 5000 + f'끝{i}') for i in range(1,4)]
     result = provider.filter_evidence('질문', candidates)
-    assert len(batches) == 1
+    assert len(batches) == 2
+    assert [d['number'] for d in batches[1]] == ['제2조']
+    assert batches[1][0]['body'] == candidates[1]['body']
     assert batches[0][2]['body'].endswith('끝3')
     assert [r['number'] for r in result] == ['제1조','제3조']
     assert all(r['relevance_checked'] for r in result)
@@ -191,4 +193,7 @@ def test_stream_and_json_use_identical_verified_context(tmp_path):
     body = {'question':'선박안전법 적용범위', 'as_of':'2026-10-21'}
     events = [json.loads(line) for line in client.post('/api/chat/stream',json=body).text.splitlines() if line]
     assert [e['stage'] for e in events if e['type']=='stage'] == ['rewrite','search','review','assess','answer']
-    assert events[-1]['result'] == client.post('/api/chat',json=body).json()
+    streamed, regular = events[-1]['result'], client.post('/api/chat',json=body).json()
+    for result in (streamed,regular):
+        assert result['review_trace'].pop('created_at')
+    assert streamed == regular

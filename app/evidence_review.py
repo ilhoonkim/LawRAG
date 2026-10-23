@@ -32,8 +32,16 @@ SYSTEM = (
     '관련 근거는 relevant=true 및 role=direct 또는 supporting, 무관한 근거는 relevant=false 및 role=irrelevant입니다. '
     '입력된 정수 id마다 정확히 한 번씩 판정하세요. id를 생략·중복·변경하지 마세요. '
     'conditions는 문자열 배열이며 최대 8개, 각 500자 이하로 간단히 씁니다. 없으면 빈 배열입니다. '
-    '추론 과정이나 답변을 쓰지 말고 JSON 객체만 반환하세요: '
-    '{"decisions":[{"id":1,"relevant":true,"role":"direct","conditions":[]}]}')
+    'reason에는 관련 쟁점과 본문상 기여 또는 명확한 불일치를 한두 문장, 600자 이내로 요약하세요. '
+    '추론 과정이나 답변을 쓰지 말고 짧은 판정 사유를 포함한 JSON 객체만 반환하세요: '
+    '{"decisions":[{"id":1,"relevant":true,"role":"direct","conditions":[],"reason":"요청된 절차를 본문에서 규정함"}]}')
+
+RECHECK = (
+    '이번 요청은 후보 누락 방지를 위한 최종 재검토입니다. 다른 후보와 비교하여 가장 좋은 근거를 고르는 작업이 아닙니다. '
+    '각 후보를 독립적으로 읽고 원질의의 어느 쟁점 또는 필요한 전제에 기여하는지 판단하세요. '
+    '관련성 부족과 답변 완성에 필요한 정보 부족을 구분하세요. 자료 일부가 없거나 사용자 조건이 미확인이어도 '
+    '본문의 기여가 확인되면 조건을 명시해 유지하세요. 명시적인 대상 충돌이나 실질적인 기여가 없으면 제외하세요. '
+    '재검토라는 이유만으로 통과시키지 마세요. 앞선 판정에 의존하지 말고 제공된 본문으로 결정하세요. ')
 
 
 def response_format(model, count):
@@ -44,16 +52,17 @@ def response_format(model, count):
         'type':'object','additionalProperties':False,'required':['decisions'],
         'properties':{'decisions':{'type':'array','items':{
             'type':'object','additionalProperties':False,
-            'required':['id','relevant','role','conditions'],'properties':{
+            'required':['id','relevant','role','conditions','reason'],'properties':{
                 'id':{'type':'integer','enum':list(range(1,count+1))},
                 'relevant':{'type':'boolean'},
                 'role':{'type':'string','enum':['direct','supporting','irrelevant']},
+                'reason':{'type':'string'},
                 'conditions':{'type':'array','items':{'type':'string'}}}}}}}}}
 
 
 # 모델이 반환한 id로 원래 후보를 연결합니다. 응답 순서를 믿거나 누락된 판정을
 # 임의로 통과시키면 다른 조문이 근거가 될 수 있어 개수·중복·역할까지 검증합니다.
-def parse_decisions(response, count):
+def parse_decisions(response, count, *, outcomes=None):
     """Return accepted IDs; errors contain categories, never upstream content."""
     try:
         choice = response['choices'][0]
@@ -69,7 +78,7 @@ def parse_decisions(response, count):
             raise ValueError('후보 판정 목록이 없음')
         if len(decisions) != count:
             raise ValueError('입력 후보 수와 판정 수가 다름')
-        seen, accepted = set(), {}
+        seen, accepted, judgments = set(), {}, {}
         for decision in decisions:
             if not isinstance(decision,dict):
                 raise ValueError('후보 판정 항목의 형식 오류')
@@ -85,8 +94,14 @@ def parse_decisions(response, count):
             conditions = decision.get('conditions',[])
             if not isinstance(conditions,list) or len(conditions)>8 or any(not isinstance(c,str) or len(c)>500 for c in conditions):
                 raise ValueError('적용 조건 목록의 형식 또는 길이 오류')
+            reason = decision.get('reason','')
+            if not isinstance(reason,str) or len(reason)>600:
+                raise ValueError('판정 사유의 형식 또는 길이 오류')
+            judgments[index] = {'relevant':relevant, 'role':role, 'conditions':conditions, 'reason':reason}
             if relevant:
                 accepted[index] = {'evidence_role':role,'application_conditions':conditions}
+        if outcomes is not None:
+            outcomes.update(judgments)
         return accepted
     except (KeyError,IndexError,TypeError,AttributeError):
         raise ValueError('AI 검토 응답 구조 오류') from None
@@ -115,38 +130,60 @@ def filter_evidence(provider, question, candidates):
     model = (provider.chat_model if provider.settings.endpoint('chat').backend in ('company', 'local_model')
              else provider.settings.rerank_model or provider.chat_model)
 
-    def verify(batch):
+    def verify(batch, phase='initial'):
         documents = [{'id':i,**doc} for i,(_,doc) in enumerate(batch,1)]
         issue = None
         started = perf_counter()
         # 형식 오류에 한해 같은 묶음을 한 번 재시도합니다. 재시도 후에도 판정할 수 없으면
         # 검토되지 않은 후보로 답변을 진행하지 않고 호출자에게 실패를 알립니다.
         for attempt in range(2):
-            payload = {'question':question,'candidates':documents}
+            payload = {'question':question,'candidates':documents,'review_phase':phase}
             if issue:
                 payload['retry_requirements'] = f'이전 검토 형식 오류: {issue}. 입력의 모든 id를 정확히 한 번씩 판정하세요.'
             request = {'model':model,'temperature':0,'response_format':response_format(model,len(batch)),
-                'messages':[{'role':'system','content':SYSTEM},
+                'messages':[{'role':'system','content':SYSTEM + (RECHECK if phase=='recheck' else '')},
                             {'role':'user','content':json.dumps(payload,ensure_ascii=False)}]}
             if provider.settings.chat_backend == 'openai' and model.startswith('gpt-5'):
                 request.update(reasoning_effort='low',max_completion_tokens=8192)
             data = provider.post('/chat/completions',request)
             try:
-                accepted = parse_decisions(data,len(batch))
+                judgments = {}
+                accepted = parse_decisions(data,len(batch),outcomes=judgments)
             except ValueError as error:
                 issue = str(error)
                 logger.warning('Evidence review format error: candidates=%d attempt=%d reason=%s',len(batch),attempt+1,issue)
                 continue
             logger.info('Evidence review completed: candidates=%d attempts=%d elapsed=%.2fs',len(batch),attempt+1,perf_counter()-started)
-            return [{**candidate,'relevance_checked':True,**accepted[i]}
-                    for i,(candidate,_) in enumerate(batch,1) if i in accepted]
+            audit = [{**{k:candidate.get(k,'') for k in ('version','law_name','number')},
+                      'phase':phase,'model':model,**judgments[i]}
+                     for i,(candidate,_) in enumerate(batch,1)]
+            if phase == 'initial':
+                # Only final rejections are cached by chat_pipeline. Recheck each
+                # rejected subset once; no score/name override and no retry loop.
+                rejected_indices = [i for i in range(1,len(batch)+1) if i not in accepted]
+                rejected_batch = [batch[i-1] for i in rejected_indices]
+                if rejected_batch:
+                    recovered, second_audit = verify(rejected_batch, 'recheck')
+                    audit.extend(second_audit)
+                    # Use original subset indices, not the model's reordered IDs.
+                    for subset_index, metadata in recovered.items():
+                        accepted[rejected_indices[subset_index-1]] = metadata
+            return accepted, audit
         raise SetupError(f'근거 관련성 검증 실패: {issue}. 해당 후보 묶음을 1회 재시도했지만 확인하지 못했습니다. 검증되지 않은 후보로 답변하지 않았습니다.')
 
     logger.info('Evidence review started: candidates=%d batches=%d parallel=%d',len(candidates),len(batches),min(2,len(batches)))
     if len(batches) == 1:
-        return verify(batches[0])
+        results = [verify(batches[0])]
     # Long bodies remain intact. Run at most two batches together, preserving
     # ranked order and failing the request if any batch remains unverified.
     # 긴 본문은 보존하면서 최대 두 묶음을 병렬 검토합니다. map은 입력 순서를 유지합니다.
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        return [row for approved in pool.map(verify,batches) for row in approved]
+    else:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(verify,batches))
+    # Append on the calling thread, in input order, after all batches succeed.
+    if not hasattr(provider,'evidence_review_log'):
+        provider.evidence_review_log = []
+    provider.evidence_review_log.extend(entry for _,audit in results for entry in audit)
+    return [{**candidate,'relevance_checked':True,**approved[i]}
+            for batch,(approved,_) in zip(batches,results)
+            for i,(candidate,_) in enumerate(batch,1) if i in approved]

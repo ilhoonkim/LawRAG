@@ -73,6 +73,8 @@ with tempfile.TemporaryDirectory(prefix='lawrag-nse-ui-') as temp:
                 assert all(m['role'] != 'assistant' for m in history[0]['messages'])
                 page.evaluate("""() => {
                     window.pushAnswer({type:'result', result:{answer:'검사를 신청하세요. [1] 참조 [C5]. 미확보 [C99]. 코드 `[C5]`.', as_of:'2026-10-23',
+                      review_trace:{policy:'rejection_recheck_v1',question:'선박 검사 신청 방법',
+                        decisions:[{number:'제1조',phase:'recheck',relevant:true,reason:'신청 방법을 규정함'}]},
                       linked_sources:{C5:{law_name:'시험법',number:'별표 1',title:'검사 기준',
                         html_url:'/documents/linked-test.html#annex-1',relation:'references_annex'}},
                       evidence:[{law_name:'시험법',number:'제1조',title:'검사',score:.8,body:'검사를 신청한다.'}]}});
@@ -100,6 +102,13 @@ with tempfile.TemporaryDirectory(prefix='lawrag-nse-ui-') as temp:
                 page.reload()
                 page.locator('.history-title').first.click()
                 expect(page.get_by_role('button',name='참조 자료: 시험법 별표 1(검사 기준) 보기')).to_be_visible()
+                with page.expect_download() as download_info:
+                    page.get_by_role('button',name='근거 검토 기록 다운로드').click()
+                download = download_info.value
+                assert download.suggested_filename == 'lawrag_review.json'
+                saved = json.loads(Path(download.path()).read_text())
+                assert saved['question'] == '선박 검사 신청 방법'
+                assert saved['decisions'][0]['reason'] == '신청 방법을 규정함'
 
                 # A failed stream must never persist its partial answer as an assistant message.
                 page.get_by_role('button', name='＋ 새 대화', exact=True).click()

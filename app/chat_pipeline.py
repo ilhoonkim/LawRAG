@@ -1,5 +1,6 @@
 """Verified retrieval with bounded graph expansion and one gap-driven search."""
 import re
+from datetime import datetime, timezone
 from .config import SEARCH_FUSION, SEARCH_THRESHOLD
 from .temporal import resolve_date
 from .retrieval import select_candidates
@@ -126,6 +127,7 @@ def review(store, provider, settings, question, candidates, cutoff, rejected, *,
 
 
 def run_chat(store, provider, settings, body, progress=lambda stage: None, *, diagnostics=None):
+    provider.evidence_review_log = []
     cutoff, clarification = resolve_date(body.question, body.as_of)
     if clarification:
         return {'evidence': [], 'answer': clarification, 'clarification': clarification,
@@ -193,16 +195,32 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None, *, di
     linked_sources = {f'C{i}': {k:e.get(k,'') for k in
         ('version','law_name','number','title','html_url','effective','relation')}
         for i,e in enumerate((e for e in evidence if e.get('relation') and not e.get('include_in_sources')),1)}
+    visible_keys = {source_key(e) for e in visible_evidence}
+    context_keys = {source_key(e) for e in evidence}
+    outcomes = [
+        {'version':key[0], 'law_name':key[1], 'number':key[2],
+         'stage':('llm_rejected' if key in rejected else 'visible_source' if key in visible_keys
+                  else 'llm_context_only' if key in context_keys else 'approved_but_omitted')}
+        for key in sorted(set(checked) | rejected)]
+    review_trace = {
+        'policy':'rejection_recheck_v1','question':body.question,'as_of':result['as_of'],
+        'created_at':datetime.now(timezone.utc).isoformat(),
+        'rewritten_query':rewritten,'additional_queries':extra_queries if rounds else [],
+        'fusion':SEARCH_FUSION,'threshold':SEARCH_THRESHOLD,
+        'candidate_note':'검색에서 반환된 후보 목록입니다. 전체 자료의 점수·순위는 diagnose_search로 확인합니다.',
+        'retrieved_candidates':[{k:e.get(k) for k in (
+            'version','law_name','number','title','score','rrf_score','admission_score',
+            'body_semantic_score','body_keyword_score','title_semantic_score','matched_body_nouns')}
+            for e in candidates],
+        'decisions':list(provider.evidence_review_log), 'review_outcomes':outcomes,
+        'missing_references':missing,'assessment':assessment,
+    }
     if diagnostics is not None:
-        visible_keys = {source_key(e) for e in visible_evidence}
-        context_keys = {source_key(e) for e in evidence}
-        diagnostics['review_outcomes'] = [
-            {'version':key[0], 'law_name':key[1], 'number':key[2],
-             'stage':('llm_rejected' if key in rejected else 'visible_source' if key in visible_keys
-                      else 'llm_context_only' if key in context_keys else 'approved_but_omitted')}
-            for key in sorted(set(checked) | rejected)]
+        diagnostics['review_outcomes'] = outcomes
+        diagnostics['review_decisions'] = list(provider.evidence_review_log)
         diagnostics['missing_references'] = missing
-    result.update(evidence=visible_evidence,linked_sources=linked_sources,missing_references=missing,rewritten_query=rewritten,
+    result.update(evidence=visible_evidence,linked_sources=linked_sources,review_trace=review_trace,
+        missing_references=missing,rewritten_query=rewritten,
         original_question=body.question,candidate_count=len(candidates),approved_count=len(evidence),
         linked_context_count=len(evidence)-len(visible_evidence),
         hierarchy_source_count=sum(bool(e.get('include_in_sources')) for e in visible_evidence),

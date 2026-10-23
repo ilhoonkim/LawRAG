@@ -73,6 +73,7 @@ def diagnose(store, provider, settings, question, *, mode='hybrid', chat=False,
                                 for row in candidates if matches(row)]
     report.update(trace)
     report['review_outcomes'] = [row for row in trace['review_outcomes'] if matches(row)]
+    report['review_decisions'] = [row for row in trace.get('review_decisions',[]) if matches(row)]
     report['inventory_note'] = ('자료가 없습니다. HTML 파일 존재 여부와 DB 수집 완료 여부는 다릅니다.'
                                 if not inventory else 'active_at_cutoff=false인 버전은 이 기준일의 검색 대상이 아닙니다.')
     return report

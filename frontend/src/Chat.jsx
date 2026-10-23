@@ -26,6 +26,17 @@ function groupedSources(evidence = []) {
   });
   return [...groups.values()].sort((a,b) => b.score - a.score).map(g => ({ ...g, items: g.items.sort((a,b) => (b.score || 0) - (a.score || 0)) }));
 }
+
+function downloadReview(trace) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(trace, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'lawrag_review.json';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 export default function Chat({ visible, status, onSource }) {
   const [chats, setChats] = useState(readChats);
   const [active, setActive] = useState(null);
@@ -69,7 +80,7 @@ export default function Chat({ visible, status, onSource }) {
     try {
       const selectedModel = model === 'custom' ? customModel.trim() : (model || status?.chat_model);
       const result = await streamChat({ question: value, mode: 'hybrid', history, model: selectedModel || undefined }, setStage, setAnswerText);
-      setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'assistant', content: result.answer, evidence: result.evidence, linked_sources: result.linked_sources, as_of: result.as_of, model: selectedModel, missing_facts: result.assessment?.missing_facts, additional_search_rounds: result.additional_search_rounds }] } : c));
+      setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'assistant', content: result.answer, evidence: result.evidence, linked_sources: result.linked_sources, review_trace: result.review_trace, as_of: result.as_of, model: selectedModel, missing_facts: result.assessment?.missing_facts, additional_search_rounds: result.additional_search_rounds }] } : c));
     } catch (error) {
       setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'error', content: error.message }] } : c));
     } finally { busyRef.current = false; setBusy(false); setAnswerText(''); }
@@ -119,6 +130,7 @@ export default function Chat({ visible, status, onSource }) {
           }} /> : <div className="answer-text">{m.content}</div>}
           {m.evidence?.some(item => !item.relation || item.include_in_sources) && <div className="evidence-chips">{groupedSources(m.evidence).map(group => <button key={group.name} aria-label={`${group.name} 근거 ${group.items.length}개 보기`} aria-expanded={sourceGroup?.messageIndex === i && sourceGroup?.name === group.name} onClick={event => openSources(group, i, event.currentTarget)}><JusticeIcon />{group.name} <span>{group.items.length}</span></button>)}</div>}
           {m.role === 'assistant' && <button className="copy-button" onClick={() => copy(m.content,i)}>{copied === i ? '복사됨' : copied === 'error' ? '복사 권한을 확인하세요' : '답변 복사'}</button>}
+          {m.role === 'assistant' && m.review_trace && <button className="copy-button" onClick={() => downloadReview(m.review_trace)}>근거 검토 기록 다운로드</button>}
         </article>)}
         {busy && <div className="message pipeline-progress" role="status" aria-label="답변 처리 단계" aria-atomic="true">
           <p className="current"><span className="stage-activity-icon"><ProcessingIcon /></span><span>{stage ? stageLabels[stage] || '답변 처리 중' : '서버 연결 중…'}</span></p>

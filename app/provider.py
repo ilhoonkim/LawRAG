@@ -64,6 +64,7 @@ class Provider:
         self._cancelled = lambda: False
         self.last_chat_diagnostics = {}
         self.last_stream_diagnostics = {}
+        self.evidence_review_log = []
         from .vllm_context import VllmContext
         self._vllm_context = VllmContext()
 
