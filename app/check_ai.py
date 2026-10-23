@@ -15,7 +15,10 @@ def main(argv=None):
     settings = Settings()
     endpoint = settings.endpoint('embedding')
     print('임베딩 연결:', endpoint.backend)
-    print('AI 키 읽기:', '설정됨' if endpoint.api_key else '없음 (사내 서버는 무인증 가능)')
+    if endpoint.backend == 'local_embedding':
+        print('임베딩 인증: MQ 계정 (local.env 또는 netrc)')
+    else:
+        print('AI 키 읽기:', '설정됨' if endpoint.api_key else '없음 (사내 서버는 무인증 가능)')
     if endpoint.backend == 'openai':
         print('AI 키 설정 위치:', ai_key_source())
     try:

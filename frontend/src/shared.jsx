@@ -77,7 +77,7 @@ export function Modal({ title, onClose, className = '', children, id }) {
   </dialog>;
 }
 
-export async function streamChat(body, onStage) {
+export async function streamChat(body, onStage, onAnswerText = () => {}) {
   const response = await fetch('/api/chat/stream', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   });
@@ -92,6 +92,7 @@ export async function streamChat(body, onStage) {
     if (!line.trim()) return;
     const event = JSON.parse(line);
     if (event.type === 'stage') onStage(event.stage);
+    if (event.type === 'answer_text' && typeof event.text === 'string') onAnswerText(event.text);
     if (event.type === 'result') result = event.result;
     if (event.type === 'error') throw new Error(event.detail);
   }

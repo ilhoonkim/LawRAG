@@ -62,7 +62,7 @@ LawRAG/
 | 검색 점수 | [retrieval.py](app/retrieval.py), [keywords.py](app/keywords.py) | 명사 일치·벡터 비교, 법령명 보조 점수, RRF, 후보 선정 |
 | 기준일·참조 확장 | [temporal.py](app/temporal.py), [graph.py](app/graph.py) | 적용 버전 선택, 참조·역참조·별표·정의·상하위 조문 확장 |
 | 답변 흐름 | [chat_pipeline.py](app/chat_pipeline.py), [evidence_review.py](app/evidence_review.py) | 후보 검토, 연결 조문 검토, 충분성 판단, 추가 검색, 답변 |
-| AI 연동 | [ai_endpoints.py](app/ai_endpoints.py), [provider.py](app/provider.py), [http_retry.py](app/http_retry.py) | OpenAI/사내 서버 선택, 임베딩·Chat Completions 호출, 응답 검증·재시도 |
+| AI 연동 | [ai_endpoints.py](app/ai_endpoints.py), [provider.py](app/provider.py), [http_retry.py](app/http_retry.py), [nse_mq.py](app/nse_mq.py) | OpenAI/사내 HTTP·NSE MQ 선택, 채팅·임베딩 호출, 응답 검증·스트리밍 |
 | HTML 링크 | [references.py](app/references.py), [document_links.py](app/document_links.py) | 조문·별표 참조 추출, 법/영 약칭 해석, 문서 간 링크 |
 | 일괄 수집 | [preload_maritime.py](app/preload_maritime.py), [preload_admrul.py](app/preload_admrul.py) | 지정 법률·행정규칙 목록 수집 및 중단 후 재개 |
 
@@ -101,7 +101,7 @@ Python **3.12**와 SQLite 확장 로드가 가능한 환경이 필요합니다. 
 
 ### OpenAI와 회사 sLLM·임베딩 서버 함께 사용
 
-채팅과 임베딩 서버를 **각각 독립적으로 선택**할 수 있습니다. 기본값은 둘 다 `openai`이며 기존 설정을 그대로 사용합니다. 사내 서버는 현재 OpenAI 호환 `/chat/completions`, `/embeddings` 형식을 지원합니다.
+채팅과 임베딩 서버를 **각각 독립적으로 선택**할 수 있습니다. 기본값은 둘 다 `openai`이며 기존 설정을 그대로 사용합니다. 사내 서버는 OpenAI 호환 `/chat/completions`, `/embeddings`와 NSE의 MQ 채팅(`LOCAL_MODEL`)을 지원합니다.
 
 ```powershell
 if (!(Test-Path local.env)) { Copy-Item local.env.example local.env }
@@ -114,10 +114,15 @@ notepad local.env
 | `company` | `openai` | 회사 sLLM + 기존 OpenAI 임베딩 |
 | `openai` | `company` | OpenAI 채팅 + 회사 임베딩 |
 | `company` | `company` | 채팅·임베딩 모두 회사 서버 |
+| `local_model` | `openai` | NSE MQ 채팅 기본값 + 기존 OpenAI 임베딩. 채팅창에서 GPT도 선택 가능 |
+| `openai` | `local_embedding` | 기존 GPT + NSE MQ 임베딩 (`LOCAL_EMBEDDING`) |
+| `local_model` | `local_embedding` | 채팅·임베딩 모두 NSE MQ |
 
 `local.env`에서 `COMPANY_CHAT_BASE_URL`, `COMPANY_CHAT_MODEL`, `COMPANY_EMBEDDING_BASE_URL`, `COMPANY_EMBEDDING_MODEL`에 주소·포트·모델을 지정합니다. 키는 서버별 `COMPANY_CHAT_API_KEY`, `COMPANY_EMBEDDING_API_KEY`로 분리하며, 비어 있으면 인증 헤더를 보내지 않습니다. 사내 연결에 OpenAI 키를 대신 보내거나 실패 시 OpenAI로 자동 전환하지 않습니다.
 
 채팅만 변경하면 재임베딩이 필요 없습니다. **임베딩 서버·모델을 변경하면 기존 벡터와 혼합할 수 없으므로 재색인하거나 별도 `DATA_DIR`를 사용**합니다. 서버 선택은 서버 설정 단위이며, 채팅창의 모델 선택은 현재 선택된 채팅 서버 안에서만 이루어집니다. [설정 예시·API 요청/응답 형식·재색인 절차](docs/company_ai.md)를 참고하세요.
+
+회사 NSE의 **RabbitMQ 규약**은 `python -m app.check_nse_mq --connect-only`로 접속·큐를 확인하고, 옵션 없이 일반 응답, `--stream`으로 실제 청크, `--json`으로 JSON 생성, `--embedding`으로 임베딩을 검사합니다. MQ 설정을 추가하면 GPT를 유지하면서 채팅 모델 목록에서 `LOCAL_MODEL`도 선택할 수 있습니다. 요청은 `nse_request`, 응답은 요청마다 분리된 `nse_result_kih_<UUID>` 큐를 사용합니다. 임베딩은 `EMBEDDING_BACKEND=local_embedding`으로 별도 선택하며 `NSE_EMBEDDING_MODEL`에 `served_model_name`을 설정합니다. 기존 데이터는 재색인이 필요합니다. [NSE MQ 접속 설정과 PowerShell 실행 순서](docs/nse_mq.md)를 참고하세요.
 
 웹 검색·채팅은 **RRF + 후보 임계치 0.3으로 고정**합니다. 기존 `SEARCH_FUSION`, `SEARCH_THRESHOLD`, `SEARCH_TITLE_WEIGHT`, `SEARCH_MIN_TITLE_SCORE`, `SEARCH_MIN_BODY_SCORE`는 현재 웹 검색에 사용하지 않습니다. 요약·예상 질문 생성용 `METADATA_MODEL`도 사용하지 않습니다.
 
@@ -377,7 +382,7 @@ RRF 원점수 = 0.60 / (60 + 본문 순위)
 
 검색은 저장된 버전과 조회한 연혁을 기준으로 동작합니다. API에서 확인한 적용 버전이 미수집이면 더 오래된 버전으로 대신 답하지 않습니다. 전체 법령의 최신성, 부칙·경과조치·조문별 별도 시행일의 자동 판단까지 보장하는 구조는 아닙니다. 본문의 `<개정 날짜>`만으로 설치 의무의 적용 연도를 확정하지 않습니다.
 
-`POST /api/search`는 검색·참조 확장 결과만 반환하며 LLM 관련성 필터는 적용하지 않습니다. `/api/chat`과 `/api/chat/stream`은 위 전체 검토 흐름을 사용합니다. 스트림은 토큰별 답변이 아닌 NDJSON **처리 단계 이벤트 + 최종 결과**이며, 화면은 이벤트에 따라 현재 단계 하나와 진행 애니메이션을 표시합니다. 채팅은 키워드 모드에서도 재작성·검토·답변에 AI를 사용합니다.
+`POST /api/search`는 검색·참조 확장 결과만 반환하며 LLM 관련성 필터는 적용하지 않습니다. `/api/chat`과 `/api/chat/stream`은 위 전체 검토 흐름을 사용합니다. NDJSON으로 **처리 단계 이벤트 + 최종 결과**를 전달하고, `LOCAL_MODEL`의 최종 답변 생성 중에는 MQ의 누적 본문도 중계합니다. 화면은 현재 단계 하나와 진행 애니메이션을 표시하다가 생성 중 본문을 갱신합니다. JSON 재작성·검토의 중간 내용은 출력하지 않습니다. 채팅은 키워드 모드에서도 재작성·검토·답변에 AI를 사용합니다.
 
 검색 누락은 수집 여부, 적용 버전, 임계치, 후보 15개 제한, LLM 제외 중 어디에서 발생했는지 나눠 확인할 수 있습니다.
 

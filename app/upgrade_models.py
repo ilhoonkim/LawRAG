@@ -69,7 +69,7 @@ def configure(env_path):
 
 def main():
     selected = Settings()
-    if selected.embedding_backend != 'openai' or selected.chat_backend != 'openai':
+    if selected.endpoint('embedding').backend != 'openai' or selected.endpoint('chat').backend != 'openai':
         print('사내 서버 설정은 변경하지 않았습니다. 현재 선택한 임베딩 모델로 바꾸려면 python -m app.reindex_embeddings를 사용하세요.')
         return 2
     # local.env가 모델 설정을 덮어쓰는 경우 .env만 수정해서 성공했다고 안내하지 않습니다.

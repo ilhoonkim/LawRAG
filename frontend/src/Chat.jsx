@@ -32,6 +32,7 @@ export default function Chat({ visible, status, onSource }) {
   const [question, setQuestion] = useState('');
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState(null);
+  const [answerText, setAnswerText] = useState('');
   const [sourceGroup, setSourceGroup] = useState(null);
   const [model, setModel] = useState('');
   const [customModel, setCustomModel] = useState('');
@@ -55,23 +56,23 @@ export default function Chat({ visible, status, onSource }) {
     card?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [sourceGroup]);
   useEffect(() => { try { localStorage.setItem('lawrag.chats', JSON.stringify(chats.slice(0,30))); } catch { setStorageError('대화 저장 공간이 부족합니다.'); } }, [chats]);
-  useEffect(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight; }, [chats, active, busy, stage]);
+  useEffect(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight; }, [chats, active, busy, stage, answerText]);
   async function send(e) {
     e.preventDefault();
     const value = question.trim();
     if (value.length < 2 || busyRef.current) return;
     const id = active || createChatId();
-    busyRef.current = true; setBusy(true); setStage(null); setSourceGroup(null);
+    busyRef.current = true; setBusy(true); setStage(null); setSourceGroup(null); setAnswerText('');
     const history = messages.filter(m => ['user','assistant'].includes(m.role)).slice(-6).map(m => ({ role: m.role, content: m.content.slice(0,6000) }));
     setChats(prev => active ? prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'user', content: value }] } : c) : [{ id, title: value, messages: [{ role: 'user', content: value }] }, ...prev].slice(0,30));
     setActive(id); setQuestion('');
     try {
       const selectedModel = model === 'custom' ? customModel.trim() : (model || status?.chat_model);
-      const result = await streamChat({ question: value, mode: 'hybrid', history, model: selectedModel || undefined }, setStage);
+      const result = await streamChat({ question: value, mode: 'hybrid', history, model: selectedModel || undefined }, setStage, setAnswerText);
       setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'assistant', content: result.answer, evidence: result.evidence, as_of: result.as_of, model: selectedModel, missing_facts: result.assessment?.missing_facts, additional_search_rounds: result.additional_search_rounds }] } : c));
     } catch (error) {
       setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'error', content: error.message }] } : c));
-    } finally { busyRef.current = false; setBusy(false); }
+    } finally { busyRef.current = false; setBusy(false); setAnswerText(''); }
   }
   async function copy(text, index) { try { await copyText(text); setCopied(index); } catch { setCopied('error'); } }
   function openSources(group, messageIndex, trigger, citation = null) {
@@ -102,7 +103,7 @@ export default function Chat({ visible, status, onSource }) {
       </div>)}</nav>
       <div className="sidebar-footer">법령을 찾고, 근거로 답합니다.<br />대화는 이 브라우저에 저장됩니다.</div>
     </aside>
-    <main><header><span className="agent-pill">◉ 법령 검색 에이전트</span><div className="chat-header-actions"><span id="connection" role="status">{storageError || (status ? `${status.laws.length}개 법령 · ${status.llm_configured ? 'AI 연결 설정됨' : 'AI 연결 미설정'}` : '서버 상태 확인 중')}</span><button className="mobile-new-chat" disabled={busy} onClick={() => setActive(null)}>새 대화</button></div></header>
+    <main><header><span className="agent-pill">◉ 법령 검색 에이전트</span><div className="chat-header-actions"><span id="connection" role="status">{storageError || (status ? `${status.laws.length}개 법령 · ${status.llm_configured || status.local_model_configured ? 'AI 연결 설정됨' : 'AI 연결 미설정'}` : '서버 상태 확인 중')}</span><button className="mobile-new-chat" disabled={busy} onClick={() => setActive(null)}>새 대화</button></div></header>
       <div id="messages" ref={messagesRef} aria-live="polite">
         {!current && <div className="welcome"><div className="welcome-icon">§</div><h1>법령에 묻고,<br />근거로 확인하세요.</h1><p>관련 조문을 찾아 답변과 원문을 함께 제공합니다.</p><button id="example" onClick={() => setQuestion('선박안전법에 적용받지 않는 선박의 종류는?')}>선박안전법에 적용받지 않는 선박의 종류는? ↗</button></div>}
         {messages.map((m,i) => <article key={i} className={`message ${m.role}`}>
@@ -117,10 +118,10 @@ export default function Chat({ visible, status, onSource }) {
         </article>)}
         {busy && <div className="message pipeline-progress" role="status" aria-label="답변 처리 단계" aria-atomic="true">
           <p className="current"><span className="stage-activity-icon"><ProcessingIcon /></span><span>{stage ? stageLabels[stage] || '답변 처리 중' : '서버 연결 중…'}</span></p>
-          <div className="answer-skeleton" aria-hidden="true">
+          {answerText ? <div className="streaming-answer" aria-label="생성 중인 답변"><AnswerMarkdown content={answerText} evidence={[]} /></div> : <div className="answer-skeleton" aria-hidden="true">
             <div className="skeleton-preview"><span className="skeleton-line" /><span className="skeleton-line" /><span className="skeleton-line" /></div>
             <div className="skeleton-paragraph"><span className="skeleton-line" /><span className="skeleton-line writing" /></div>
-          </div>
+          </div>}
         </div>}
       </div>
       <div className="composer-area"><form id="chat-form" onSubmit={send}>

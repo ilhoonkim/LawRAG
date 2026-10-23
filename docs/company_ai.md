@@ -1,6 +1,6 @@
 # OpenAI와 회사 AI 서버 연결
 
-기존 OpenAI 설정을 유지하면서 채팅과 임베딩을 각각 회사 서버로 전환할 수 있습니다. 현재 회사 서버 연동은 **OpenAI 호환 HTTP API**를 대상으로 합니다. URL만 바꿔 모든 회사 고유 JSON 형식을 처리하는 구조는 아니며, 아래 형식과 다르면 요청·응답 변환 코드를 추가해야 합니다.
+기존 OpenAI 설정을 유지하면서 채팅과 임베딩을 각각 회사 서버로 전환할 수 있습니다. 이 문서는 **OpenAI 호환 HTTP API** 설정을 설명합니다. NSE의 고유 RabbitMQ 채팅은 [LOCAL_MODEL 설정·통신 점검](nse_mq.md)을 참고하세요. 두 방식 모두 기존 임베딩을 유지할 수 있습니다.
 
 ## 설정 파일과 선택 범위
 
@@ -149,6 +149,8 @@ Content-Type: application/json
 OpenAI와 회사 임베딩 데이터를 동시에 보존하며 비교하려면 `DATA_DIR`를 분리합니다. 별도 폴더는 기존 `laws.sqlite3`·`raw/`·`html/`을 함께 복사한 후 재색인하거나 새로 수집해서 준비합니다. **한 DB에 두 임베딩 공간을 동시에 저장·융합하는 기능은 아닙니다.**
 
 ## 회사 고유 API 형식인 경우
+
+NSE의 RabbitMQ 규약은 [MQ 통신 점검 명령](nse_mq.md)으로 접속·일반 응답·실제 스트리밍·JSON 생성·임베딩을 확인할 수 있습니다. HTTP 응답 예시는 이 MQ 연동에 필요하지 않습니다. 웹에서 `LOCAL_MODEL`을 고르면 MQ를 사용하고 기존 GPT도 계속 선택할 수 있습니다. 임베딩은 별도로 `EMBEDDING_BACKEND=local_embedding`, `NSE_EMBEDDING_MODEL=emb-bge-m3-ko`로 설정하고 기존 벡터를 재색인합니다.
 
 현재 연결 경계는 [ai_endpoints.py](../app/ai_endpoints.py)의 서버 선택과 [provider.py](../app/provider.py)의 HTTP 요청·응답 처리입니다. 검색·관계 확장·근거 검토 흐름은 이 계층 위에 있습니다.
 

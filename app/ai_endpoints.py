@@ -19,8 +19,18 @@ class AIEndpoint:
 
     def validate(self):
         prefix = f'COMPANY_{self.purpose.upper()}'
+        if self.backend == 'local_model' and self.purpose == 'chat':
+            from .nse_mq import NseMqSettings
+            NseMqSettings.from_env().validate(generation=True)
+            return
+        if self.backend == 'local_embedding' and self.purpose == 'embedding':
+            from .nse_mq import NseMqSettings
+            NseMqSettings.from_env().validate()
+            if not re.fullmatch(MODEL_PATTERN, self.model or ''):
+                raise SetupError('NSE_EMBEDDING_MODEL의 served_model_name을 확인하세요.')
+            return
         if self.backend not in ('openai', 'company'):
-            raise SetupError(f'{self.purpose.upper()}_BACKEND는 openai 또는 company여야 합니다.')
+            raise SetupError(f'{self.purpose.upper()}_BACKEND 설정을 확인하세요. 채팅은 openai, company, local_model을 지원하고 임베딩은 openai, company, local_embedding을 지원합니다.')
         try:
             url = urlsplit(self.base_url)
             valid = (url.scheme in ('http', 'https') and url.hostname and url.port != 0
@@ -49,6 +59,11 @@ def endpoint(settings, purpose):
     if purpose not in ('chat', 'embedding'):
         raise ValueError('지원하지 않는 AI 요청 종류입니다.')
     backend = getattr(settings, purpose + '_backend')
+    if backend.lower() in ('local_model', 'loca_model') and purpose == 'chat':
+        return AIEndpoint('local_model', '', 'LOCAL_MODEL', '', purpose)
+    if purpose == 'embedding' and (backend.lower() in ('local_embedding', 'loca_embedding') or (
+            backend == 'openai' and settings.embedding_model.upper() in ('LOCAL_EMBEDDING', 'LOCA_EMBEDDING'))):
+        return AIEndpoint('local_embedding', '', settings.nse_embedding_model, '', purpose)
     if backend == 'company':
         return AIEndpoint(backend, getattr(settings, f'company_{purpose}_base_url'),
                           getattr(settings, f'company_{purpose}_model'),

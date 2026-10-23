@@ -79,8 +79,10 @@ def create_app(settings=None, provider=None, law_api=None):
     @app.get('/api/status')
     def status():
         return {'law_api_configured': bool(settings.law_oc), 'llm_configured': settings.ai_configured('chat'),
+                'local_model_configured':provider.local_model_available() if hasattr(provider, 'local_model_available') else False,
                 'embedding_configured':settings.ai_configured('embedding'),
-                'chat_backend':settings.chat_backend, 'embedding_backend':settings.embedding_backend,
+                'chat_backend':settings.endpoint('chat').backend, 'embedding_backend':settings.endpoint('embedding').backend,
+                'embedding_model':settings.endpoint('embedding').model,
                 'threshold': SEARCH_THRESHOLD, 'chat_model': settings.active_chat_model,
                 'search_fusion': SEARCH_FUSION, 'laws': store.list_laws()}
 
@@ -108,6 +110,8 @@ def create_app(settings=None, provider=None, law_api=None):
             available = provider.models() if hasattr(provider, 'models') else []
         except SetupError as exc:
             warning = str(exc)
+        if hasattr(provider, 'local_model_available') and provider.local_model_available():
+            available = list(dict.fromkeys(available + ['LOCAL_MODEL']))
         return {'models': list(dict.fromkeys([settings.active_chat_model] + presets + available)),
                 'available': available, 'default': settings.active_chat_model,
                 'backend':settings.chat_backend, 'warning': warning}
@@ -125,12 +129,25 @@ def create_app(settings=None, provider=None, law_api=None):
     def chat(body: ChatRequest):
         return run_chat(store, chat_provider(body), settings, body)
 
-    # 스트림은 토큰 단위 답변이 아니라 실제 처리 단계와 최종 결과를 NDJSON으로 전달합니다.
+    # 처리 단계와 최종 결과를 NDJSON으로 전달합니다. NSE의 최종 답변 생성 중에는
+    # 누적 answer_text도 중계합니다. JSON 재작성/검토 중간 내용은 노출하지 않습니다.
     # 동기 작업은 별도 스레드에서 실행하고, Queue를 통해 HTTP 응답 쪽으로 이벤트를 넘깁니다.
     @app.post('/api/chat/stream')
     def chat_stream(body: ChatRequest):
         selected = chat_provider(body)
         events, cancelled = Queue(), Event()
+        from threading import Lock
+        answer_lock, pending_answer = Lock(), [None]
+        def answer_text(text):
+            if cancelled.is_set():
+                raise InterruptedError()
+            # 느린 브라우저에는 최신 누적 본문 하나만 대기시켜 메모리 사용을 제한합니다.
+            with answer_lock:
+                if pending_answer[0] is None:
+                    events.put({'type': 'answer_pending'})
+                pending_answer[0] = text
+        if hasattr(selected, 'for_stream'):
+            selected = selected.for_stream(answer_text, cancelled.is_set)
         # 연결이 끊기면 다음 단계 진입 시 중단합니다. 이미 진행 중인 외부 API 호출은
         # 즉시 취소되지 않으므로 Provider의 타임아웃도 별도로 적용됩니다.
         def progress(stage):
@@ -161,6 +178,10 @@ def create_app(settings=None, provider=None, law_api=None):
                         continue
                     if event is None:
                         break
+                    if event['type'] == 'answer_pending':
+                        with answer_lock:
+                            event = {'type': 'answer_text', 'text': pending_answer[0]}
+                            pending_answer[0] = None
                     yield json.dumps(event, ensure_ascii=False) + '\n'
             finally:
                 cancelled.set()

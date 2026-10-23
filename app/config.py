@@ -49,6 +49,11 @@ class Settings:
     company_embedding_model: str = os.getenv('COMPANY_EMBEDDING_MODEL', '')
     company_embedding_api_key: str = os.getenv('COMPANY_EMBEDDING_API_KEY', '')
     company_chat_json_mode: str = os.getenv('COMPANY_CHAT_JSON_MODE', 'json_object')
+    # NSE가 받는 출력 토큰 상한. 질문 재작성/근거 검토/최종 답변에 공통 적용.
+    nse_max_tokens: int = int(os.getenv('NSE_MAX_TOKENS', '4096'))
+    nse_embedding_model: str = os.getenv('NSE_EMBEDDING_MODEL', 'emb-bge-m3-ko')
+    # 같은 served_model_name 뒤의 가중치를 교체했을 때 벡터 식별자를 갱신합니다.
+    nse_embedding_revision: str = os.getenv('NSE_EMBEDDING_REVISION', '')
     ai_timeout_seconds: float = float(os.getenv('AI_TIMEOUT_SECONDS', '120'))
     embedding_max_input_bytes: int = int(os.getenv('EMBEDDING_MAX_INPUT_BYTES', '8000'))
     embedding_batch_size: int = int(os.getenv('EMBEDDING_BATCH_SIZE', '16'))

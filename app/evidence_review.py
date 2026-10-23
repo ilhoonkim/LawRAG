@@ -117,7 +117,7 @@ def filter_evidence(provider, question, candidates):
         size += length
     if batch:
         batches.append(batch)
-    model = (provider.chat_model if provider.settings.chat_backend == 'company'
+    model = (provider.chat_model if provider.settings.endpoint('chat').backend in ('company', 'local_model')
              else provider.settings.rerank_model or provider.chat_model)
 
     def verify(batch):

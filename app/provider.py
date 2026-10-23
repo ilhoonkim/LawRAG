@@ -1,4 +1,5 @@
 import json
+import hashlib
 import math
 import re
 from dataclasses import replace
@@ -58,13 +59,33 @@ def api_failure(response):
 class Provider:
     def __init__(self, settings):
         self.settings = settings
+        self._on_answer_text = None
+        self._cancelled = lambda: False
+
+    def for_stream(self, on_text, cancelled):
+        selected = Provider(self.settings)
+        selected._on_answer_text, selected._cancelled = on_text, cancelled
+        return selected
+
+    def local_model_available(self):
+        from .nse_mq import NseMqSettings
+        try:
+            NseMqSettings.from_env().validate(generation=True)
+            return True
+        except SetupError:
+            return False
 
     # 사용자가 고른 모델은 이번 대화의 답변과 관련성 검토에 함께 적용됩니다.
     # 임베딩 모델은 변경하지 않습니다.
     def for_model(self, model):
         # Per-request instance: concurrent chats never mutate the collector/model.
         changes = {'chat_model':model, 'rerank_model':model}
-        if self.settings.chat_backend == 'company':
+        if model.upper() in ('LOCAL_MODEL', 'LOCA_MODEL'):
+            changes.update(chat_backend='local_model', chat_model='LOCAL_MODEL', rerank_model='LOCAL_MODEL')
+        elif self.settings.endpoint('chat').backend == 'local_model':
+            # 기본값이 LOCAL_MODEL이어도 사용자가 GPT를 고르면 기존 OpenAI 설정 사용.
+            changes['chat_backend'] = 'openai'
+        elif self.settings.chat_backend == 'company':
             changes['company_chat_model'] = model
         return Provider(replace(self.settings, **changes))
 
@@ -76,6 +97,8 @@ class Provider:
         if not self.settings.ai_configured('chat'):
             return []
         endpoint = self.settings.endpoint('chat')
+        if endpoint.backend == 'local_model':
+            return ['LOCAL_MODEL']
         try:
             with httpx.Client(timeout=15) as client:
                 response = client.get(endpoint.url('/models'), headers=endpoint.headers)
@@ -96,6 +119,14 @@ class Provider:
     def fingerprint(self):
         endpoint = self.settings.endpoint('embedding')
         value = endpoint.base_url.rstrip('/') + '|' + endpoint.model
+        if endpoint.backend == 'local_embedding':
+            from .nse_mq import NseMqSettings
+            mq = NseMqSettings.from_env()
+            # 동일한 served_model_name도 환경/모델 가중치가 다르면 비교하지 않습니다.
+            # 비밀번호·응답 큐 UUID는 식별자에 넣지 않습니다.
+            identity = [mq.host.lower(), mq.port, mq.vhost, mq.request_queue, mq.tls,
+                        mq.domain_id, endpoint.model, self.settings.nse_embedding_revision]
+            value = 'nse-mq:' + hashlib.sha256(json.dumps(identity).encode()).hexdigest() + '|' + endpoint.model
         # 채팅 서버 변경은 벡터 공간을 바꾸지 않습니다. 입력 분할 변경은 재색인 대상입니다.
         if self.settings.embedding_max_input_bytes != 8000:
             value += f'|chunk-bytes={self.settings.embedding_max_input_bytes}'
@@ -105,6 +136,12 @@ class Provider:
         purpose = 'embedding' if path == '/embeddings' else 'chat'
         endpoint = self.settings.endpoint(purpose)
         endpoint.validate()
+        if purpose == 'chat' and endpoint.backend == 'local_model':
+            return self._nse_completion(body)
+        if purpose == 'embedding' and endpoint.backend == 'local_embedding':
+            vectors = self._nse_request(texts=body['input'], served_model_name=endpoint.model)
+            # 나머지 수집·검색 코드는 기존 공통 index/embedding 형식으로 처리합니다.
+            return {'data': [{'index': i, 'embedding': vector} for i, vector in enumerate(vectors)]}
         if path == '/chat/completions' and endpoint.backend == 'openai' and re.match(r'^(gpt-5|o[1-9])', body.get('model','')):
             body = {k:v for k,v in body.items() if k != 'temperature'}
         schema = body.get('response_format',{}).get('json_schema',{}).get('name','')
@@ -142,6 +179,25 @@ class Provider:
             return response.json()
         except ValueError:
             raise SetupError('AI API 요청 실패 [응답 형식 오류]: API가 JSON 응답을 반환하지 않았습니다. 선택한 서버의 BASE_URL을 확인하세요.') from None
+
+    def _nse_request(self, **request):
+        from .nse_mq import MqCheckError, NseMqClient, NseMqSettings
+        client = NseMqClient(NseMqSettings.from_env())
+        try:
+            return client.check(timeout=self.settings.ai_timeout_seconds, cancelled=self._cancelled, **request)
+        except MqCheckError as exc:
+            request_id = client.report.get('request_id')
+            suffix = f' [NSE 요청 ID: {request_id}]' if request_id else ''
+            raise SetupError(str(exc) + suffix) from None
+
+    def _nse_completion(self, body, on_text=None):
+        # JSON Object/Schema 옵션은 NSE 필드가 아닙니다. 기존 messages의
+        # JSON 지시는 보존하고, 기존 재작성/검토 파서에서 응답을 엄격히 검사합니다.
+        answer = self._nse_request(messages=body['messages'], stream=on_text is not None,
+                                   max_tokens=self.settings.nse_max_tokens,
+                                   temperature=body.get('temperature', 0),
+                                   on_snapshot=on_text or (lambda text: None))
+        return {'choices': [{'message': {'role': 'assistant', 'content': answer}}]}
 
     # 입력 순서를 보존한 벡터 목록을 반환합니다. API가 응답 순서를 바꿔도 index로 복원하며,
     # 누락·중복 인덱스, 비정상 수치, 영벡터를 저장 전에 차단합니다.
@@ -342,7 +398,11 @@ class Provider:
         messages = [{'role': 'system', 'content': system}]
         messages += history[-6:]
         messages += [{'role': 'user', 'content': f'질문: {question}\n\n검색된 근거:\n{context}'}]
-        data = self.post('/chat/completions', {'model': self.chat_model, 'messages': messages, 'temperature': 0.1})
+        body = {'model': self.chat_model, 'messages': messages, 'temperature': 0.1}
+        if self.settings.endpoint('chat').backend == 'local_model' and self._on_answer_text:
+            data = self._nse_completion(body, self._on_answer_text)
+        else:
+            data = self.post('/chat/completions', body)
         answer = data['choices'][0]['message']['content']
         if not isinstance(answer, str) or not answer.strip():
             raise ValueError('AI 응답이 비어 있습니다.')
