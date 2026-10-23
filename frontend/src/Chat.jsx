@@ -69,7 +69,7 @@ export default function Chat({ visible, status, onSource }) {
     try {
       const selectedModel = model === 'custom' ? customModel.trim() : (model || status?.chat_model);
       const result = await streamChat({ question: value, mode: 'hybrid', history, model: selectedModel || undefined }, setStage, setAnswerText);
-      setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'assistant', content: result.answer, evidence: result.evidence, as_of: result.as_of, model: selectedModel, missing_facts: result.assessment?.missing_facts, additional_search_rounds: result.additional_search_rounds }] } : c));
+      setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'assistant', content: result.answer, evidence: result.evidence, linked_sources: result.linked_sources, as_of: result.as_of, model: selectedModel, missing_facts: result.assessment?.missing_facts, additional_search_rounds: result.additional_search_rounds }] } : c));
     } catch (error) {
       setChats(prev => prev.map(c => c.id === id ? { ...c, messages: [...c.messages, { role: 'error', content: error.message }] } : c));
     } finally { busyRef.current = false; setBusy(false); setAnswerText(''); }
@@ -109,7 +109,11 @@ export default function Chat({ visible, status, onSource }) {
         {messages.map((m,i) => <article key={i} className={`message ${m.role}`}>
           {m.role === 'assistant' && <div className="message-label">LAW RAG · 법령 에이전트{m.model && <span className="answer-model"> · {m.model}</span>}</div>}
           {m.as_of && <div className="answer-date">기준일 {m.as_of} · 수집된 개정 버전 기준</div>}
-          {m.role === 'assistant' ? <AnswerMarkdown content={m.content} evidence={m.evidence} onCitationClick={(number, trigger) => {
+          {m.role === 'assistant' ? <AnswerMarkdown content={m.content} evidence={m.evidence} linkedSources={m.linked_sources} onCitationClick={(number, trigger) => {
+            if (typeof number === 'string' && m.linked_sources?.[number]?.html_url) {
+              onSource(m.linked_sources[number]);
+              return;
+            }
             const group = groupedSources(m.evidence).find(g => g.items.some(item => item.citation === number));
             if (group) openSources(group, i, trigger, number);
           }} /> : <div className="answer-text">{m.content}</div>}

@@ -72,15 +72,34 @@ with tempfile.TemporaryDirectory(prefix='lawrag-nse-ui-') as temp:
                 history = page.evaluate("JSON.parse(localStorage.getItem('lawrag.chats'))")
                 assert all(m['role'] != 'assistant' for m in history[0]['messages'])
                 page.evaluate("""() => {
-                    window.pushAnswer({type:'result', result:{answer:'검사를 신청하세요. [1]', as_of:'2026-10-23',
+                    window.pushAnswer({type:'result', result:{answer:'검사를 신청하세요. [1] 참조 [C5]. 미확보 [C99]. 코드 `[C5]`.', as_of:'2026-10-23',
+                      linked_sources:{C5:{law_name:'시험법',number:'별표 1',title:'검사 기준',
+                        html_url:'/documents/linked-test.html#annex-1',relation:'references_annex'}},
                       evidence:[{law_name:'시험법',number:'제1조',title:'검사',score:.8,body:'검사를 신청한다.'}]}});
                     window.endAnswer();
                 }""")
                 expect(page.get_by_label('생성 중인 답변')).to_have_count(0)
                 expect(page.get_by_role('button', name='시험법 근거 1개 보기')).to_be_visible()
                 history = page.evaluate("JSON.parse(localStorage.getItem('lawrag.chats'))")
-                assert history[0]['messages'][-1]['content'] == '검사를 신청하세요. [1]'
+                assert history[0]['messages'][-1]['content'].startswith('검사를 신청하세요. [1]')
                 assert history[0]['messages'][-1]['model'] == 'LOCAL_MODEL'
+                assert history[0]['messages'][-1]['linked_sources']['C5']['number'] == '별표 1'
+                page.get_by_role('button',name='근거 1: 시험법 제1조(검사) 보기').click()
+                expect(page.get_by_role('complementary',name='지식 출처')).to_contain_text('[1] 제1조')
+                page.get_by_role('button',name='지식 출처 닫기').click()
+                page.route('**/documents/linked-test.html', lambda route: route.fulfill(
+                    content_type='text/html',body='<h1 id="annex-1">Annex fixture</h1>'))
+                annex = page.get_by_role('button',name='참조 자료: 시험법 별표 1(검사 기준) 보기')
+                expect(annex).to_have_text('별표 1')
+                expect(page.locator('.message.assistant .citation-link')).to_have_count(2)
+                expect(page.locator('.message.assistant code')).to_have_text('[C5]')
+                expect(page.locator('.message.assistant')).to_contain_text('[C99]')
+                annex.click()
+                expect(page.locator('#source-dialog iframe')).to_have_attribute('src','/documents/linked-test.html#annex-1')
+                page.keyboard.press('Escape')
+                page.reload()
+                page.locator('.history-title').first.click()
+                expect(page.get_by_role('button',name='참조 자료: 시험법 별표 1(검사 기준) 보기')).to_be_visible()
 
                 # A failed stream must never persist its partial answer as an assistant message.
                 page.get_by_role('button', name='＋ 새 대화', exact=True).click()

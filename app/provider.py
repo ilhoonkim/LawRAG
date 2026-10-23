@@ -423,7 +423,8 @@ class Provider:
             raise SetupError('근거 충분성 검토 응답을 확인할 수 없습니다. 다시 시도해 주세요.') from None
 
     # 검토를 통과한 실제 조문 본문을 답변 근거로 전달합니다.
-    # 화면의 검색 근거·상하위 조문은 [1], [2] 번호를 받습니다. 나머지 연결 문맥은 번호가 없습니다.
+    # 검색 근거·상하위 조문은 [1], [2], 나머지 연결 문맥은 [C1], [C2]로
+    # 구분합니다. 화면은 C 인용을 자료 명칭과 원문 링크로 표시합니다.
     # 이 순서가 프런트엔드 출처 번호와 일치해야 인용 클릭이 올바른 조문을 가리킵니다.
     def answer(self, question, evidence, history, missing_references=None, assessment=None):
         recommended = [e for e in evidence if not e.get('relation') or e.get('include_in_sources')]
@@ -438,7 +439,7 @@ class Provider:
             f'[{i}] ' + json.dumps(e.get('reference_edges',[]), ensure_ascii=False)
             for i,e in enumerate(recommended,1) if e.get('include_in_sources'))
         if linked:
-            context += '\n\n연결 참조 자료(답변 문맥 전용, 숫자 인용 번호 없음):\n'
+            context += '\n\n연결 참조 자료(C 인용 번호 사용, 추천 근거와 구별):\n'
             for i,e in enumerate(linked,1):
                 paths = '; '.join(f'{r["from_law"]} {r["from_article"]} → {r["to_law"]} {r["to_article"]}'
                                   f' (관계: {r.get("relation", e["relation"])}; 출처: {r.get("provenance",{}).get("source","본문")}; '
@@ -464,7 +465,8 @@ class Provider:
             '각 사실 주장 뒤에 제공된 근거의 순번을 [1] 형식으로 표시하세요. 여러 근거는 [1][2]처럼 각각 표시하고, 근거 번호를 임의로 바꾸거나 별도 링크·각주 정의로 만들지 마세요. 근거로 확인할 수 없는 내용은 확인할 수 없다고 밝히세요. '
             '숫자 근거 번호는 추천 근거에 부여된 번호만 사용하세요. 연결 참조 자료도 본문과 연결 관계를 읽고 적용 조건·예외 판단에 사용하세요. '
             '연결 참조만 뒷받침하는 내용은 그 자료의 실제 법령명·조문명으로 출처를 밝히고 추천 근거에 그 내용이 있는 것처럼 인용하지 마세요. '
-            '연결 참조에는 숫자 번호를 새로 붙이지 말고 C1 같은 내부 표기도 답변에 출력하지 마세요. 추천 근거가 없으면 숫자 인용 없이 실제 법령명·조문명으로 설명하세요. '
+            '연결 참조에는 숫자 번호를 새로 붙이지 말고 제공된 연결 참조 C1은 [C1]처럼 인용하세요. 화면에서 해당 자료의 실제 명칭과 원문 링크로 표시됩니다. '
+            'C 번호는 제공된 자료에만 사용하고 임의로 만들거나 별도 링크·각주 정의로 바꾸지 마세요. '
             'delegation_comparison은 공식 위임조문 비교 묶음이며, 모든 하위 조문 간 직접 위임 관계를 뜻하지 않습니다. hierarchy_citation은 상하위 본문 인용입니다. 비교 관계·인용만으로 법적 위임이나 적용을 단정하지 말고 각 본문의 요건을 확인하세요. '
             '참조자료 일부가 없어도 확보된 본문에 명시된 내용은 답하세요. 참조 미확보만으로 답변 전체를 거절하지 마세요. '
             '다만 빠진 자료 없이는 판단할 수 없는 부분은 추측하지 말고 그 부분만 확인이 필요하다고 구분하세요. '

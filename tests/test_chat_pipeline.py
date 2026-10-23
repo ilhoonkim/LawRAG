@@ -63,6 +63,9 @@ def test_four_stages_rejected_refs_removed_sorted_before_answer():
     assert [r['number'] for r in result['evidence']] == ['제1조','제3조']
     assert [r['number'] for r in provider.context] == ['제4조','제1조','제3조']
     assert result['linked_context_count'] == 1
+    assert result['linked_sources']['C1']['number'] == '제4조'
+    assert result['linked_sources']['C1']['html_url'] == '/documents/v1.html#제4조'
+    assert 'body' not in result['linked_sources']['C1']
     assert all(not r.get('reference_titles') for r in result['evidence'])
     assert result['generated']
 
@@ -73,6 +76,7 @@ def test_no_approved_parent_means_no_reference_expansion_or_answer():
     result = run_chat(PipelineStore(),provider,Settings(),ChatRequest(question='집주인이 필요한 서류는?'))
     assert result['evidence'] == [] and not result['generated']
     assert result['linked_context_count'] == 0 and provider.context is None
+    assert result['linked_sources'] == {}
 
 
 def test_prompt_separates_linked_context_and_numbers_only_visible_sources(monkeypatch):

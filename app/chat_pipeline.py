@@ -188,6 +188,11 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None, *, di
     # 상하위 연결은 출처에 포함하고 일반 연결 문맥만 숨깁니다.
     # approved_count에는 검토를 통과한 후보에서 확장한 연결 문맥도 포함됩니다.
     visible_evidence = [e for e in evidence if not e.get('relation') or e.get('include_in_sources')]
+    # Preserve the exact C-label ordering used by Provider.answer. These are
+    # context links, not independently ranked/reviewed search recommendations.
+    linked_sources = {f'C{i}': {k:e.get(k,'') for k in
+        ('version','law_name','number','title','html_url','effective','relation')}
+        for i,e in enumerate((e for e in evidence if e.get('relation') and not e.get('include_in_sources')),1)}
     if diagnostics is not None:
         visible_keys = {source_key(e) for e in visible_evidence}
         context_keys = {source_key(e) for e in evidence}
@@ -197,7 +202,7 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None, *, di
                       else 'llm_context_only' if key in context_keys else 'approved_but_omitted')}
             for key in sorted(set(checked) | rejected)]
         diagnostics['missing_references'] = missing
-    result.update(evidence=visible_evidence,missing_references=missing,rewritten_query=rewritten,
+    result.update(evidence=visible_evidence,linked_sources=linked_sources,missing_references=missing,rewritten_query=rewritten,
         original_question=body.question,candidate_count=len(candidates),approved_count=len(evidence),
         linked_context_count=len(evidence)-len(visible_evidence),
         hierarchy_source_count=sum(bool(e.get('include_in_sources')) for e in visible_evidence),
