@@ -5,6 +5,7 @@ from .config import SEARCH_FUSION, SEARCH_THRESHOLD
 from .temporal import resolve_date
 from .retrieval import select_candidates
 from .vllm_context import ContextBudgetExceeded
+from .context_selection import evidence_units
 
 # 채팅의 전체 흐름: 기준일 확정 → 원질의+재작성 검색 → 후보 검토 → 연결 조문 확장
 # → 연결 조문 검토 → 근거 충분성 점검 → 필요 시 한 번 더 검색 → 확보한 본문으로 답변 생성.
@@ -51,28 +52,46 @@ def retrieve(store, provider, settings, body, *, variants=None, limit=None, expa
 def budgeted(evidence, max_chars):
     """Never cut a proviso off an article to fit a prompt."""
     selected, missing, size = [], [], 0
-    for row in sorted(evidence,key=lambda e:(-e.get('score',0),bool(e.get('relation')),source_key(e))):
-        if size+len(row['body']) > max_chars or len(selected)>=40:
-            missing.append({'law_name':row['law_name'],'number':row['number'],'version':row['version'],
-                            'reason':'본문을 자르지 않기 위해 이번 입력 예산에서 제외되었습니다.'})
+    def omit(rows):
+        missing.extend({'law_name':r['law_name'],'number':r['number'],'version':r['version'],
+                        'reason':'본문을 자르지 않기 위해 이번 입력 예산에서 제외되었습니다.'} for r in rows)
+    for unit in evidence_units(evidence):
+        length = sum(len(r['body']) for r in unit)
+        if size+length<=max_chars and len(selected)+len(unit)<=40:
+            selected.extend(unit)
+            size += length
+        elif length<=max_chars and len(unit)<=40:
+            # Keep a higher-ranked article's annexes before a lower-ranked unit.
+            omit(unit)
         else:
-            selected.append(row)
-            size += len(row['body'])
+            # A unit cannot fit even by itself. Preserve its complete root and
+            # any complete annexes that fit, explicitly reporting the remainder.
+            if size+len(unit[0]['body'])>max_chars or len(selected)>=40:
+                omit(unit)
+                continue
+            for row in unit:
+                if size+len(row['body'])<=max_chars and len(selected)<40:
+                    selected.append(row)
+                    size += len(row['body'])
+                else:
+                    omit([row])
     return selected,missing
 
 
 def trim_token_context(evidence, missing, omissions, error, stage):
-    """Remove one complete low-priority document, keeping source labels rebuildable."""
+    """Remove a low-priority unit, keeping cited annexes with retained roots."""
     if not evidence:
         raise error
-    # Reference scores can be inherited from a parent. Preserve independently
-    # retrieved articles before linked context, then preserve higher scores.
-    removed = max(evidence,key=lambda e:(bool(e.get('relation')),-e.get('score',0),source_key(e)))
-    evidence.remove(removed)
-    gap = {k:removed[k] for k in ('version','law_name','number')}
-    gap.update(reason='토큰 한도로 전체 조문을 입력에서 제외함',stage=stage,**error.details())
-    missing.append(gap)
-    omissions.append(gap)
+    units = evidence_units(evidence)
+    # If the last remaining article + annexes cannot fit, shed complete annexes
+    # one at a time before giving up that article. Never truncate table rows.
+    removed = units[-1] if len(units)>1 else [units[0][-1]]
+    for row in removed:
+        evidence.remove(row)
+        gap = {k:row[k] for k in ('version','law_name','number')}
+        gap.update(reason='토큰 한도로 전체 조문을 입력에서 제외함',stage=stage,**error.details())
+        missing.append(gap)
+        omissions.append(gap)
     valid = {source_key(e) for e in evidence}
     for e in evidence:
         e['reference_titles'] = [r for r in e.get('reference_titles',[]) if
@@ -275,6 +294,10 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None, *, di
             'body_semantic_score','body_keyword_score','title_semantic_score','matched_body_nouns')}
             for e in candidates],
         'decisions':list(provider.evidence_review_log), 'review_outcomes':outcomes,
+        'answer_context':[{**{k:e.get(k,'') for k in ('version','law_name','number','relation')},
+                           'body_chars':len(e['body']),
+                           'image_placeholders':e['body'].count('[이미지: 원문 확인 필요]')}
+                          for e in evidence],
         'token_budget_omissions':review_budget_gaps(provider)+token_omissions,
         'history_messages_omitted':omitted_history,
         'missing_references':missing,'assessment':assessment,
@@ -283,6 +306,7 @@ def run_chat(store, provider, settings, body, progress=lambda stage: None, *, di
         diagnostics['review_outcomes'] = outcomes
         diagnostics['review_decisions'] = list(provider.evidence_review_log)
         diagnostics['token_budget_omissions'] = review_budget_gaps(provider)+token_omissions
+        diagnostics['answer_context'] = review_trace['answer_context']
         diagnostics['missing_references'] = missing
     result.update(evidence=visible_evidence,linked_sources=linked_sources,review_trace=review_trace,
         missing_references=missing,rewritten_query=rewritten,

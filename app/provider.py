@@ -455,8 +455,8 @@ class Provider:
             f'{label}: {e.get("evidence_role","direct")} · 조건: {e.get("application_conditions",[])} · 위치: {[u["location"] for u in e.get("matched_units",[])]}' for label,e in labeled)
         context += '\n\n참조 조문 제목:\n' + '\n'.join(f'{r.get("law_name",e["law_name"])} {r["number"]}({r["title"]})' for e in evidence for r in e.get('reference_titles', []))
         if missing_references:
-            context += '\n\n본문 미확보 참조(법적 근거가 아님):\n' + '\n'.join(
-                f'{r["law_name"]} {r["number"]}' for r in missing_references)
+            context += '\n\n이번 답변에 포함되지 않은 참조(법적 근거가 아님):\n' + '\n'.join(
+                f'{r["law_name"]} {r["number"]}: {r.get("reason","본문 미확보")}' for r in missing_references)
         if assessment:
             context += '\n\n근거 충분성 점검(법적 근거 아님):\n' + json.dumps(assessment,ensure_ascii=False)
         system = ('당신은 한국 법령 검색 보조자입니다. 아래 근거만 사용해 한국어로 답하세요. '

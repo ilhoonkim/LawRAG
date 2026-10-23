@@ -3,6 +3,7 @@ import re
 from urllib.parse import quote
 from .references import article_links, annex_references, reference_target
 from .store import grams
+from .context_selection import is_linked_annex
 
 
 # 검색으로 찾은 조문에 필요한 참조·역참조·별표·정의 문맥을 붙이는 계층입니다.
@@ -162,9 +163,11 @@ def expand(store, evidence, *, cutoff, question='', limit=40):
             additions[k].update(include_in_sources=True, source_type='hierarchy_connection')
         elif k not in seen:
             additions[k] = node
-    # 질문과 겹치는 문맥을 먼저 담고 확장 개수를 제한합니다.
+    # Reviewed roots' explicit annexes come before incidental/reverse context.
+    # Tables often lack the question's wording but contain its concrete criteria.
     # 이후 chat_pipeline.budgeted()에서 전체 답변 입력의 본문 길이도 제한합니다.
-    ordered = sorted(additions.values(),key=lambda n:(-len(grams(question)&grams(n['body'])), -n['score'],key(n)))
+    ordered = sorted(additions.values(),key=lambda n:(not is_linked_annex(n),
+        -n['score'] if is_linked_annex(n) else 0, -len(grams(question)&grams(n['body'])), -n['score'],key(n)))
     for node in ordered[limit:]:
         missing.append({'law_name':node['law_name'],'number':node['number'],'version':node['version'],
                         'reason':'참조 확장 개수 제한으로 이번 검토에서 제외되었습니다.'})
