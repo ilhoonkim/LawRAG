@@ -129,7 +129,7 @@ def create_app(settings=None, provider=None, law_api=None):
     def chat(body: ChatRequest):
         return run_chat(store, chat_provider(body), settings, body)
 
-    # 처리 단계와 최종 결과를 NDJSON으로 전달합니다. NSE의 최종 답변 생성 중에는
+    # 처리 단계와 최종 결과를 NDJSON으로 전달합니다. HTTP SSE/NSE의 최종 답변 생성 중에는
     # 누적 answer_text도 중계합니다. JSON 재작성/검토 중간 내용은 노출하지 않습니다.
     # 동기 작업은 별도 스레드에서 실행하고, Queue를 통해 HTTP 응답 쪽으로 이벤트를 넘깁니다.
     @app.post('/api/chat/stream')

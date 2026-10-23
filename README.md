@@ -126,6 +126,8 @@ notepad local.env
 
 **bge-m3-ko를 MQ 없이 직접 호출**하려면 [local.env.vllm.example](local.env.vllm.example)을 `local.env`로 복사합니다. `EMBEDDING_BACKEND=vllm`, `COMPANY_EMBEDDING_BASE_URL=http://127.0.0.1:8000/v1`, `COMPANY_EMBEDDING_MODEL=emb-bge-m3-ko`를 사용합니다. LawRAG 서버와 같은 PC에서 `kubectl --context=kdev-context -n davinci-ragllm port-forward svc/emb-bge-m3-ko-vllm-predictor 8000:80`을 실행해 두고 `python -m app.check_ai`로 임베딩만 확인합니다. [백업·포트 전달·재색인 실행 순서](docs/company_ai.md#bge-m3-ko-vllm-직접-연결)를 참고하세요. 채팅은 기존 GPT 설정을 유지합니다.
 
+회사 vLLM 채팅은 `COMPANY_CHAT_MAX_TOKENS=auto`로 서버 문맥 한도와 실제 입력 토큰 수를 조회해 남은 길이를 출력 상한으로 사용합니다. 웹의 최종 답변은 `stream=true`의 SSE 청크를 받아 바로 표시하고, 내부 검토 JSON은 완성 후 검증합니다. `python -m app.check_ai --stream`으로 JSON 응답·토큰 예산·실제 스트리밍을 확인할 수 있습니다. [문맥 한도와 스트리밍 설정](docs/company_ai.md#vllm-채팅-실제-문맥-한도와-스트리밍)을 참고하세요.
+
 회사 NSE의 **RabbitMQ 규약**은 `python -m app.check_nse_mq --connect-only`로 접속·큐를 확인하고, 옵션 없이 일반 응답, `--stream`으로 실제 청크, `--json`으로 JSON 생성, `--embedding`으로 임베딩을 검사합니다. MQ 설정을 추가하면 GPT를 유지하면서 채팅 모델 목록에서 `LOCAL_MODEL`도 선택할 수 있습니다. 요청은 `nse_request`, 응답은 요청마다 분리된 `nse_result_kih_<UUID>` 큐를 사용합니다. 임베딩은 `EMBEDDING_BACKEND=local_embedding`으로 별도 선택하며 `NSE_EMBEDDING_MODEL`에 `served_model_name`을 설정합니다. 기존 데이터는 재색인이 필요합니다. [NSE MQ 접속 설정과 PowerShell 실행 순서](docs/nse_mq.md)를 참고하세요.
 
 웹 검색·채팅은 **RRF + 후보 임계치 0.3으로 고정**합니다. 기존 `SEARCH_FUSION`, `SEARCH_THRESHOLD`, `SEARCH_TITLE_WEIGHT`, `SEARCH_MIN_TITLE_SCORE`, `SEARCH_MIN_BODY_SCORE`는 현재 웹 검색에 사용하지 않습니다. 요약·예상 질문 생성용 `METADATA_MODEL`도 사용하지 않습니다.

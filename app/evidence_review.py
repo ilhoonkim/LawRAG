@@ -61,14 +61,8 @@ def parse_decisions(response, count):
             raise SetupError('근거 관련성 검증 실패: 모델이 검토 결과를 제공하지 않았습니다. 검증되지 않은 후보로 답변하지 않았습니다.')
         if choice.get('finish_reason') == 'length':
             raise ValueError('응답이 출력 길이 제한으로 중단됨')
-        content = message.get('content')
-        if not isinstance(content,str) or not content.strip():
-            raise ValueError('검토 응답이 비어 있음')
-        fenced = re.fullmatch(r'\s*```(?:json)?\s*(.*?)\s*```\s*',content,re.S)
-        try:
-            parsed = json.loads(fenced[1] if fenced else content)
-        except json.JSONDecodeError:
-            raise ValueError('검토 응답의 JSON 형식 오류') from None
+        from .chat_json import json_object
+        parsed = json_object(response)
         decisions = parsed.get('decisions') if isinstance(parsed,dict) else None
         if not isinstance(decisions,list):
             raise ValueError('후보 판정 목록이 없음')

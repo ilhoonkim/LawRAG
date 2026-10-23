@@ -7,6 +7,7 @@ import httpx
 from .laws import SetupError
 from .http_retry import error_info, request_with_retry, RequestFailure
 from .ai_endpoints import MODEL_PATTERN
+from .chat_json import ChatJSONError, json_object, response_diagnostics
 
 
 # 외부 AI 서비스와 통신하는 공통 계층입니다. 호출 실패는 안전한 범주로 변환해
@@ -61,6 +62,10 @@ class Provider:
         self.settings = settings
         self._on_answer_text = None
         self._cancelled = lambda: False
+        self.last_chat_diagnostics = {}
+        self.last_stream_diagnostics = {}
+        from .vllm_context import VllmContext
+        self._vllm_context = VllmContext()
 
     def for_stream(self, on_text, cancelled):
         selected = Provider(self.settings)
@@ -137,26 +142,16 @@ class Provider:
         endpoint = self.settings.endpoint(purpose)
         endpoint.validate()
         if purpose == 'chat' and endpoint.backend == 'local_model':
-            return self._nse_completion(body)
+            data = self._nse_completion(body)
+            self.last_chat_diagnostics = response_diagnostics(data)
+            return data
         if purpose == 'embedding' and endpoint.backend == 'local_embedding':
             vectors = self._nse_request(texts=body['input'], served_model_name=endpoint.model)
             # 나머지 수집·검색 코드는 기존 공통 index/embedding 형식으로 처리합니다.
             return {'data': [{'index': i, 'embedding': vector} for i, vector in enumerate(vectors)]}
-        if path == '/chat/completions' and endpoint.backend == 'openai' and re.match(r'^(gpt-5|o[1-9])', body.get('model','')):
-            body = {k:v for k,v in body.items() if k != 'temperature'}
         schema = body.get('response_format',{}).get('json_schema',{}).get('name','')
-        if purpose == 'chat' and endpoint.backend == 'company':
-            mode = self.settings.company_chat_json_mode
-            if mode not in ('auto','json_object','prompt'):
-                raise SetupError('COMPANY_CHAT_JSON_MODE는 auto, json_object 또는 prompt여야 합니다.')
-            if 'response_format' in body and mode != 'auto':
-                body = dict(body)
-                if mode == 'prompt':
-                    # API 옵션을 지원하지 않는 서버에도 프롬프트의 JSON 지시는 유지합니다.
-                    # 응답 JSON 검증·실패 시 재시도는 기존 흐름에서 그대로 수행합니다.
-                    body.pop('response_format')
-                else:
-                    body['response_format'] = {'type':'json_object'}
+        if purpose == 'chat':
+            body = self._http_chat_body(endpoint, body)
         stage = '임베딩' if path == '/embeddings' else {
             'evidence_review':'근거 관련성 검토'}.get(schema,'채팅')
         model = body.get('model','')
@@ -167,6 +162,8 @@ class Provider:
             raise SetupError('AI_TIMEOUT_SECONDS는 0보다 큰 초 단위 값이어야 합니다.')
         try:
             with httpx.Client(timeout=timeout) as client:
+                if purpose == 'chat':
+                    body = self._chat_token_budget(client, endpoint, body)
                 response = request_with_retry(lambda: client.post(endpoint.url(path),
                     headers=endpoint.headers, json=body), service='AI '+stage)
         except RequestFailure as exc:
@@ -176,9 +173,83 @@ class Provider:
         if not response.is_success:
             raise SetupError(str(api_failure(response))+context)
         try:
-            return response.json()
+            data = response.json()
         except ValueError:
             raise SetupError('AI API 요청 실패 [응답 형식 오류]: API가 JSON 응답을 반환하지 않았습니다. 선택한 서버의 BASE_URL을 확인하세요.') from None
+        if purpose == 'chat':
+            self.last_chat_diagnostics = response_diagnostics(data)
+        return data
+
+    def _http_chat_body(self, endpoint, body):
+        body = dict(body)
+        if endpoint.backend == 'openai' and re.match(r'^(gpt-5|o[1-9])', body.get('model','')):
+            body.pop('temperature', None)
+        if endpoint.backend == 'company':
+            mode = self.settings.company_chat_json_mode
+            if mode not in ('auto', 'json_object', 'prompt'):
+                raise SetupError('COMPANY_CHAT_JSON_MODE는 auto, json_object 또는 prompt여야 합니다.')
+            if 'response_format' in body and mode != 'auto':
+                if mode == 'prompt':
+                    body.pop('response_format')
+                else:
+                    body['response_format'] = {'type': 'json_object'}
+        return body
+
+    @property
+    def last_token_budget(self):
+        return dict(self._vllm_context.last_budget)
+
+    def _chat_token_budget(self, client, endpoint, body):
+        if endpoint.backend == 'company':
+            mode = self.settings.company_chat_max_tokens
+            if mode not in ('auto', 'server'):
+                raise SetupError('COMPANY_CHAT_MAX_TOKENS는 auto 또는 server여야 합니다.')
+            if mode == 'auto':
+                return self._vllm_context.prepare(client, endpoint, body)
+        return body
+
+    def stream_completion(self, messages, on_text):
+        """최종 답변/연결 진단용 스트리밍. 내부 JSON 검토에서는 호출하지 않습니다."""
+        endpoint = self.settings.endpoint('chat')
+        endpoint.validate()
+        body = {'model': self.chat_model, 'messages': messages, 'temperature': 0.1}
+        if endpoint.backend == 'local_model':
+            return self._nse_completion(body, on_text)['choices'][0]['message']['content']
+        from .chat_stream import stream_answer
+        body = {**self._http_chat_body(endpoint, body), 'stream': True}
+        timeout = self.settings.ai_timeout_seconds
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise SetupError('AI_TIMEOUT_SECONDS는 0보다 큰 초 단위 값이어야 합니다.')
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                body = self._chat_token_budget(client, endpoint, body)
+                if self._cancelled():
+                    raise InterruptedError()
+                def open_stream():
+                    response = client.send(client.build_request('POST', endpoint.url('/chat/completions'),
+                        headers=endpoint.headers, json=body), stream=True)
+                    if not response.is_success:
+                        try:
+                            response.read()  # 재시도 여부/안전한 오류 분류에만 사용
+                        except Exception:
+                            response.close()
+                            raise
+                    return response
+                # HTTP 오류/연결 시작 실패만 재시도합니다. 청크 수신 뒤에는 재요청하지 않습니다.
+                response = request_with_retry(open_stream, service='AI 답변 스트리밍')
+                try:
+                    if not response.is_success:
+                        raise api_failure(response)
+                    if 'text/event-stream' not in response.headers.get('content-type', '').lower():
+                        raise SetupError('서버가 stream=true 요청에 SSE 응답을 반환하지 않았습니다.')
+                    answer, self.last_stream_diagnostics = stream_answer(response.iter_lines(), on_text, self._cancelled)
+                    return answer
+                finally:
+                    response.close()
+        except RequestFailure as exc:
+            raise SetupError(f'AI 스트리밍 요청 실패 [{exc.reason}]: 총 {exc.attempts}회 시도했습니다.') from None
+        except httpx.HTTPError:
+            raise SetupError('AI 스트리밍 연결 오류입니다. 완료되지 않은 답변을 저장하지 않았습니다.') from None
 
     def _nse_request(self, **request):
         from .nse_mq import MqCheckError, NseMqClient, NseMqSettings
@@ -274,7 +345,7 @@ class Provider:
                         'JSON 형식: {"queries": ["검색어"]}')},
                     {'role': 'user', 'content': json.dumps({'question':question,'candidates':candidates or []},ensure_ascii=False)}],
             })
-            queries = json.loads(data['choices'][0]['message']['content'])['queries']
+            queries = json_object(data)['queries']
             if not isinstance(queries, list):
                 return []
             return list(dict.fromkeys(q.strip() for q in queries
@@ -297,10 +368,12 @@ class Provider:
                 {'role':'user','content':question}],
         })
         try:
-            query = json.loads(data['choices'][0]['message']['content'])['query']
+            query = json_object(data)['query']
             if not isinstance(query,str) or not 2 <= len(query.strip()) <= 2000:
                 raise ValueError()
             return query.strip()
+        except ChatJSONError as exc:
+            raise SetupError(f'질문 재작성 응답을 확인할 수 없습니다: {exc}.') from None
         except (ValueError,KeyError,IndexError,TypeError):
             raise SetupError('질문 재작성 응답을 확인할 수 없습니다. 다시 질문해 주세요.') from None
 
@@ -330,7 +403,7 @@ class Provider:
                 {'role':'user','content':json.dumps({'original_question':question,'as_of':as_of,
                     'evidence':documents,'missing_references':missing_references},ensure_ascii=False)}]})
         try:
-            result = json.loads(data['choices'][0]['message']['content'])
+            result = json_object(data)
             if type(result['sufficient']) is not bool:
                 raise ValueError()
             for field, count, width in [('missing_issues',8,500),('missing_facts',8,500),('search_queries',2,300)]:
@@ -340,6 +413,8 @@ class Provider:
                 result[field] = list(dict.fromkeys(v.strip() for v in values))
             return {k:result[k] for k in ('sufficient','missing_issues','missing_facts','search_queries')} | {
                 'sufficient':result['sufficient'] and bool(evidence) and not result['missing_issues'] and not result['missing_facts']}
+        except ChatJSONError as exc:
+            raise SetupError(f'근거 충분성 검토 응답을 확인할 수 없습니다: {exc}.') from None
         except (ValueError,KeyError,IndexError,TypeError):
             raise SetupError('근거 충분성 검토 응답을 확인할 수 없습니다. 다시 시도해 주세요.') from None
 
@@ -399,10 +474,9 @@ class Provider:
         messages += history[-6:]
         messages += [{'role': 'user', 'content': f'질문: {question}\n\n검색된 근거:\n{context}'}]
         body = {'model': self.chat_model, 'messages': messages, 'temperature': 0.1}
-        if self.settings.endpoint('chat').backend == 'local_model' and self._on_answer_text:
-            data = self._nse_completion(body, self._on_answer_text)
-        else:
-            data = self.post('/chat/completions', body)
+        if self._on_answer_text:
+            return self.stream_completion(messages, self._on_answer_text)
+        data = self.post('/chat/completions', body)
         answer = data['choices'][0]['message']['content']
         if not isinstance(answer, str) or not answer.strip():
             raise ValueError('AI 응답이 비어 있습니다.')

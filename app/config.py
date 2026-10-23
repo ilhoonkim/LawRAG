@@ -50,6 +50,8 @@ class Settings:
     company_embedding_model: str = os.getenv('COMPANY_EMBEDDING_MODEL', '')
     company_embedding_api_key: str = os.getenv('COMPANY_EMBEDDING_API_KEY', '')
     company_chat_json_mode: str = os.getenv('COMPANY_CHAT_JSON_MODE', 'json_object')
+    # server: 서버 기본값. auto: /v1/models + /tokenize로 남은 문맥 전체를 출력 상한으로 사용.
+    company_chat_max_tokens: str = os.getenv('COMPANY_CHAT_MAX_TOKENS', 'server')
     # NSE가 받는 출력 토큰 상한. 질문 재작성/근거 검토/최종 답변에 공통 적용.
     nse_max_tokens: int = int(os.getenv('NSE_MAX_TOKENS', '4096'))
     nse_embedding_model: str = os.getenv('NSE_EMBEDDING_MODEL', 'emb-bge-m3-ko')

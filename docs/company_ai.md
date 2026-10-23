@@ -97,6 +97,42 @@ COMPANY_EMBEDDING_API_KEY=
 
 서버 선택은 서버 전체 설정입니다. 채팅 화면에서 고르는 모델은 **현재 선택된 채팅 서버의 모델**입니다. `/models`를 지원하면 `org/model:version` 같은 사내 모델도 목록에 표시하고, 미지원이면 설정한 기본 모델 또는 모델 ID 직접 입력을 사용합니다.
 
+## vLLM 채팅: 실제 문맥 한도와 스트리밍
+
+회사 서버 `/v1/models`가 반환한 `data[].id`를 `COMPANY_CHAT_MODEL`에 넣습니다. 예를 들어 `google-gemma-4-31B-it-awq`이며, NSE의 `physical_model_id`는 HTTP 직접 호출에 사용하지 않습니다. 서버 포트가 바뀌면 `COMPANY_CHAT_BASE_URL`을 새 주소의 `/v1`로 바꾼 뒤 앱을 재시작합니다. 임베딩 서버 주소는 독립적인 설정입니다.
+
+vLLM의 JSON 출력 제약과 실제 토큰 계산을 사용하려면 기존 `local.env`에 다음을 설정합니다.
+
+```dotenv
+CHAT_BACKEND=company
+COMPANY_CHAT_JSON_MODE=json_object
+COMPANY_CHAT_MAX_TOKENS=auto
+```
+
+`auto`에서는 매 채팅 요청의 첫 호출 때 `/v1/models`에서 선택한 모델의 `max_model_len`을 읽습니다. 각 LLM 호출 전에 vLLM 루트의 `/tokenize`에 같은 `model`, `messages`, `add_generation_prompt=true`를 보내 채팅 템플릿을 포함한 입력 토큰 수를 구합니다. 예를 들어 기본 주소가 `http://host:9010/v1`이면 토큰 계산 주소는 `http://host:9010/tokenize`입니다. 내부 JSON 단계와 최종 스트리밍 답변 모두 다음 상한을 사용합니다.
+
+```text
+max_tokens = 서버의 max_model_len − 실제 입력 토큰 수
+```
+
+모델 설명에 32K 이상을 지원한다고 되어 있어도, 현재 배포가 12,288을 보고하면 그 한도가 우선합니다. 서버 배포 한도를 늘리면 다음 채팅 요청부터 새 한도를 읽습니다. `/models`와 `/tokenize`가 서로 다른 한도를 보고하면 작은 값을 사용합니다. 고정 256/512토큰 상한을 두지 않으며, 최대치를 설정해도 모델이 종료 토큰을 내면 그 전에 끝납니다. 토큰 수는 글자 수가 아닙니다.
+
+입력이 이미 한도에 도달하면 조문을 자르거나 입력을 몰래 누락하지 않고 입력 토큰 수와 한도를 표시하며 중단합니다. `/tokenize`가 없거나 응답 형식이 다르면 추정값으로 진행하지 않습니다. 그런 서버는 담당자에게 토큰 계산 API 지원을 확인하거나 `COMPANY_CHAT_MAX_TOKENS=server`로 서버 기본값을 사용합니다. 이 경우 앱이 정확한 잔여 출력 예산을 계산하지는 않습니다. 기존 근거 개수·문자 예산 설정은 유지되므로, 서버 한도가 커져도 검색 후보 수를 자동으로 늘리지는 않습니다.
+
+웹 채팅의 **최종 답변은 `stream=true`로 요청**합니다. 회사 OpenAI 호환 서버와 GPT의 SSE `delta.content`를 수신하는 즉시 누적 `answer_text` 이벤트로 브라우저에 전달합니다. 완성된 답변을 타이머로 쪼개는 방식이 아닙니다. 내부 질문 재작성·관련성 검토·충분성 판단은 완전한 JSON을 검증해야 하므로 일반 응답을 사용합니다. `reasoning_content` 등 모델의 내부 추론 필드는 화면에 표시하지 않습니다.
+
+완료 신호와 정상 종료를 확인한 후에만 답변·출처를 확정합니다. 중간 연결 실패나 `finish_reason=length`는 완성된 답변으로 저장하지 않고 오류를 표시합니다. 스트리밍 도중에는 자동으로 다시 생성하지 않아 중복 출력이 생기지 않습니다. 브라우저 연결이 끊기면 다음 청크에서 상위 HTTP 응답을 닫으며, 수신 대기 중에는 설정된 읽기 타임아웃까지 걸릴 수 있습니다.
+
+프로젝트 PowerShell에서 다음 진단을 실행하면 임베딩·질문 재작성·실제 SSE 답변을 차례로 확인합니다. 임베딩 포트 전달 창은 켜 두세요.
+
+```powershell
+.\.venv\Scripts\python.exe -m app.check_ai --stream
+```
+
+`채팅 토큰 예산`과 `답변 토큰 예산`에는 `context_tokens`, `input_tokens`, `max_output_tokens`가 표시됩니다. JSON 재작성 실패 시 종료 사유, 최종 본문 길이, 추론 필드 길이, JSON 형식 여부를 표시합니다. 응답 원문·추론 본문·키는 진단에 포함하지 않습니다. 스트리밍 검사는 고정된 인사말 테스트의 최종 텍스트를 실시간으로 출력하며 DB를 수정하지 않습니다.
+
+`COMPANY_CHAT_JSON_MODE=prompt` 서버가 반환한 완전한 JSON 코드블록(` ```json ... ``` `)은 모든 JSON 단계에서 처리합니다. 필수 필드나 후보 ID가 누락되면 계속 실패 처리하며, 설명문 속 JSON을 임의로 뽑거나 추론 텍스트를 결과로 대신 사용하지 않습니다. JSON 제약 옵션을 지원하는 vLLM은 `json_object`를 권장합니다.
+
 ## 회사 서버가 받아야 할 형식
 
 `BASE_URL`은 모델 서버의 API 기본 경로이며, 앱이 뒤에 `/chat/completions` 또는 `/embeddings`를 붙입니다. 예를 들어 `http://10.0.0.20:8000/v1`을 지정하면 채팅 요청은 `http://10.0.0.20:8000/v1/chat/completions`로 갑니다.
