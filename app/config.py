@@ -41,6 +41,7 @@ class Settings:
     rerank_model: str = os.getenv('RERANK_MODEL', '')
     # 연결 선택은 서버 설정입니다. 클라이언트가 임의 API 주소/키를 전달하지 않습니다.
     chat_backend: str = os.getenv('CHAT_BACKEND', 'openai')
+    # vllm: COMPANY_EMBEDDING_*로 HTTP 직접 호출. local_embedding: 기존 NSE MQ.
     embedding_backend: str = os.getenv('EMBEDDING_BACKEND', 'openai')
     company_chat_base_url: str = os.getenv('COMPANY_CHAT_BASE_URL', '')
     company_chat_model: str = os.getenv('COMPANY_CHAT_MODEL', '')

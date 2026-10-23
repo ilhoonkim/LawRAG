@@ -43,6 +43,7 @@ LawRAG/
 ├─ tests/                     백엔드·API·브라우저 회귀 검사
 ├─ .env.example               환경 변수 예시
 ├─ local.env.example          사내 AI 서버 연결·선택 예시
+├─ local.env.vllm.example     GPT + bge-m3-ko vLLM 직접 임베딩 설정
 ├─ requirements.txt           Python 의존성
 ├─ collect_current_laws.cmd   현행 법률·하위법 일괄 수집
 ├─ collect_current_admrul.cmd 현행 행정규칙 일괄 수집
@@ -113,6 +114,7 @@ notepad local.env
 | `openai` | `openai` | 기존 OpenAI 채팅 + 임베딩 |
 | `company` | `openai` | 회사 sLLM + 기존 OpenAI 임베딩 |
 | `openai` | `company` | OpenAI 채팅 + 회사 임베딩 |
+| `openai` | `vllm` | 기존 GPT + bge-m3-ko 등 vLLM 임베딩 HTTP 직접 호출 |
 | `company` | `company` | 채팅·임베딩 모두 회사 서버 |
 | `local_model` | `openai` | NSE MQ 채팅 기본값 + 기존 OpenAI 임베딩. 채팅창에서 GPT도 선택 가능 |
 | `openai` | `local_embedding` | 기존 GPT + NSE MQ 임베딩 (`LOCAL_EMBEDDING`) |
@@ -121,6 +123,8 @@ notepad local.env
 `local.env`에서 `COMPANY_CHAT_BASE_URL`, `COMPANY_CHAT_MODEL`, `COMPANY_EMBEDDING_BASE_URL`, `COMPANY_EMBEDDING_MODEL`에 주소·포트·모델을 지정합니다. 키는 서버별 `COMPANY_CHAT_API_KEY`, `COMPANY_EMBEDDING_API_KEY`로 분리하며, 비어 있으면 인증 헤더를 보내지 않습니다. 사내 연결에 OpenAI 키를 대신 보내거나 실패 시 OpenAI로 자동 전환하지 않습니다.
 
 채팅만 변경하면 재임베딩이 필요 없습니다. **임베딩 서버·모델을 변경하면 기존 벡터와 혼합할 수 없으므로 재색인하거나 별도 `DATA_DIR`를 사용**합니다. 서버 선택은 서버 설정 단위이며, 채팅창의 모델 선택은 현재 선택된 채팅 서버 안에서만 이루어집니다. [설정 예시·API 요청/응답 형식·재색인 절차](docs/company_ai.md)를 참고하세요.
+
+**bge-m3-ko를 MQ 없이 직접 호출**하려면 [local.env.vllm.example](local.env.vllm.example)을 `local.env`로 복사합니다. `EMBEDDING_BACKEND=vllm`, `COMPANY_EMBEDDING_BASE_URL=http://127.0.0.1:8000/v1`, `COMPANY_EMBEDDING_MODEL=emb-bge-m3-ko`를 사용합니다. LawRAG 서버와 같은 PC에서 `kubectl --context=kdev-context -n davinci-ragllm port-forward svc/emb-bge-m3-ko-vllm-predictor 8000:80`을 실행해 두고 `python -m app.check_ai`로 임베딩만 확인합니다. [백업·포트 전달·재색인 실행 순서](docs/company_ai.md#bge-m3-ko-vllm-직접-연결)를 참고하세요. 채팅은 기존 GPT 설정을 유지합니다.
 
 회사 NSE의 **RabbitMQ 규약**은 `python -m app.check_nse_mq --connect-only`로 접속·큐를 확인하고, 옵션 없이 일반 응답, `--stream`으로 실제 청크, `--json`으로 JSON 생성, `--embedding`으로 임베딩을 검사합니다. MQ 설정을 추가하면 GPT를 유지하면서 채팅 모델 목록에서 `LOCAL_MODEL`도 선택할 수 있습니다. 요청은 `nse_request`, 응답은 요청마다 분리된 `nse_result_kih_<UUID>` 큐를 사용합니다. 임베딩은 `EMBEDDING_BACKEND=local_embedding`으로 별도 선택하며 `NSE_EMBEDDING_MODEL`에 `served_model_name`을 설정합니다. 기존 데이터는 재색인이 필요합니다. [NSE MQ 접속 설정과 PowerShell 실행 순서](docs/nse_mq.md)를 참고하세요.
 

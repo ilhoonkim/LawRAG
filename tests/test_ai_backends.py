@@ -45,7 +45,8 @@ def vectors(request):
     return httpx.Response(200, json={'data':[{'index':i,'embedding':[1.,.5]} for i in range(len(inputs))][::-1]})
 
 
-@pytest.mark.parametrize('chat,embedding', [('openai','openai'),('company','openai'),('openai','company'),('company','company')])
+@pytest.mark.parametrize('chat,embedding', [('openai','openai'),('company','openai'),('openai','company'),('company','company'),
+                                          ('openai','vllm'),('company','vllm')])
 def test_independent_routing_models_and_credentials(monkeypatch, chat, embedding):
     config = settings(chat_backend=chat, embedding_backend=embedding,
                       company_chat_api_key='chat-private', company_embedding_api_key='embed-private')
@@ -88,12 +89,13 @@ def test_company_collection_preflight_does_not_require_openai_key(tmp_path):
     assert config.ai_configured('embedding') and not config.ai_configured('chat')
 
 
-def test_invalid_company_config_fails_locally_without_fallback(monkeypatch):
+@pytest.mark.parametrize('backend', ['company', 'vllm'])
+def test_invalid_company_config_fails_locally_without_fallback(monkeypatch, backend):
     mock_http(monkeypatch, lambda _:pytest.fail('Invalid company config reached a server'))
-    for config in [settings(embedding_backend='company',company_embedding_base_url=''),
-                   settings(embedding_backend='company',company_embedding_model=''),
+    for config in [settings(embedding_backend=backend,company_embedding_base_url=''),
+                   settings(embedding_backend=backend,company_embedding_model=''),
                    settings(embedding_backend='typo'),
-                   settings(embedding_backend='company',company_embedding_base_url='http://secret:private@host/v1')]:
+                   settings(embedding_backend=backend,company_embedding_base_url='http://secret:private@host/v1')]:
         assert not config.ai_configured('embedding')
         with pytest.raises(SetupError) as caught:
             Provider(config).embed(['본문'])
@@ -147,13 +149,14 @@ def test_company_model_list_and_api_model_ids(tmp_path,monkeypatch):
     assert ChatRequest(question='선박 검사',model='org/another:latest').model=='org/another:latest'
 
 
-def test_reindex_uses_selected_embedding_only_and_preserves_original_files(tmp_path,monkeypatch):
+@pytest.mark.parametrize('backend', ['company', 'vllm'])
+def test_reindex_uses_selected_embedding_only_and_preserves_original_files(tmp_path,monkeypatch,backend):
     from app import reindex_embeddings
     mock_http(monkeypatch,vectors)
     store=Store(tmp_path)
     store.ingest(RAW,Provider(settings()))
     before={p:p.read_bytes() for folder in ('raw','html') for p in (tmp_path/folder).iterdir()}
-    company=settings(embedding_backend='company',data_dir=tmp_path)
+    company=settings(embedding_backend=backend,data_dir=tmp_path)
     provider=Provider(company)
     with pytest.raises(SetupError,match='모델'):
         store.search_enhanced('선박 검사',provider)
@@ -174,8 +177,9 @@ def test_reindex_uses_selected_embedding_only_and_preserves_original_files(tmp_p
     assert reindex_embeddings.main([])==0 and not calls
 
 
-def test_small_server_embedding_limits_keep_input_and_index_order(monkeypatch):
-    config=settings(embedding_backend='company',embedding_max_input_bytes=30,embedding_batch_size=2)
+@pytest.mark.parametrize('backend', ['company', 'vllm'])
+def test_small_server_embedding_limits_keep_input_and_index_order(monkeypatch, backend):
+    config=settings(embedding_backend=backend,embedding_max_input_bytes=30,embedding_batch_size=2)
     sent=[]
     def handle(request):
         inputs=json.loads(request.content)['input']
@@ -191,10 +195,11 @@ def test_small_server_embedding_limits_keep_input_and_index_order(monkeypatch):
 @pytest.mark.parametrize('payload', [ {'data':[{'index':0,'embedding':['bad']}]},
     {'data':[{'index':True,'embedding':[1.]}]}, {'data':[]}, {'unexpected':'response'},
     {'data':[{'index':0,'embedding':[False]}]} ])
-def test_invalid_company_embedding_response_is_not_stored(monkeypatch,payload):
+@pytest.mark.parametrize('backend', ['company', 'vllm'])
+def test_invalid_company_embedding_response_is_not_stored(monkeypatch,payload,backend):
     mock_http(monkeypatch,lambda _:httpx.Response(200,json=payload))
     with pytest.raises(ValueError,match='임베딩'):
-        Provider(settings(embedding_backend='company')).embed(['본문'])
+        Provider(settings(embedding_backend=backend)).embed(['본문'])
 
 
 def test_local_env_precedence_and_old_env_compatibility(tmp_path):

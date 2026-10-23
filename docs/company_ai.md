@@ -2,6 +2,63 @@
 
 기존 OpenAI 설정을 유지하면서 채팅과 임베딩을 각각 회사 서버로 전환할 수 있습니다. 이 문서는 **OpenAI 호환 HTTP API** 설정을 설명합니다. NSE의 고유 RabbitMQ 채팅은 [LOCAL_MODEL 설정·통신 점검](nse_mq.md)을 참고하세요. 두 방식 모두 기존 임베딩을 유지할 수 있습니다.
 
+## bge-m3-ko vLLM 직접 연결
+
+`EMBEDDING_BACKEND=vllm`은 **LawRAG → HTTP `/v1/embeddings` → vLLM** 경로로 호출합니다. 임베딩 수집·재색인·질문 검색에 모두 같은 연결을 사용합니다. MQ 접속정보, NSE 요청 큐, `physical_model_id`는 필요 없습니다. 기존 `company` HTTP 설정과 같은 `COMPANY_EMBEDDING_*` 항목을 사용합니다. `local_embedding`/`LOCA_EMBEDDING`은 기존 MQ 방식이므로 직접 연결할 때는 `vllm`을 선택하세요.
+
+기존 서버와 수집 작업을 종료하고, 프로젝트 폴더의 PowerShell에서 최신 코드를 받습니다.
+
+```powershell
+git pull --ff-only origin main
+if ($LASTEXITCODE -ne 0) { throw "git pull 실패" }
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) { throw "의존성 설치 실패" }
+if (Test-Path local.env) { Copy-Item local.env local.env.backup -Force }
+Copy-Item local.env.vllm.example local.env -Force
+```
+
+`local.env`와 백업은 Git에서 제외됩니다. 예시는 기존 `.env`의 GPT 모델·키를 유지하면서 임베딩만 전환합니다. 기존 `local.env`에 OpenAI 키·모델·`DATA_DIR` 등 별도 설정을 넣었다면 백업에서 필요한 값을 옮기세요. 프로세스 환경변수가 있으면 파일보다 우선합니다.
+
+별도 PowerShell 창에서 **LawRAG Python 서버를 실행하는 같은 PC**에 포트 전달을 열어 두세요. `kdev-context` 접속 설정과 권한이 필요합니다.
+
+```powershell
+kubectl --context=kdev-context -n davinci-ragllm port-forward svc/emb-bge-m3-ko-vllm-predictor 8000:80
+```
+
+예시 파일의 핵심 설정은 다음과 같습니다. `BASE_URL`에는 `/v1`까지만 넣습니다.
+
+```dotenv
+CHAT_BACKEND=openai
+EMBEDDING_BACKEND=vllm
+COMPANY_EMBEDDING_BASE_URL=http://127.0.0.1:8000/v1
+COMPANY_EMBEDDING_MODEL=emb-bge-m3-ko
+COMPANY_EMBEDDING_API_KEY=
+AI_TIMEOUT_SECONDS=120
+EMBEDDING_MAX_INPUT_BYTES=8000
+EMBEDDING_BATCH_SIZE=16
+```
+
+`COMPANY_EMBEDDING_API_KEY`가 비어 있으면 인증 헤더를 보내지 않습니다. 요청은 `{"model":"emb-bge-m3-ko","input":["본문"]}`이며, 응답의 `data[i].index`와 `data[i].embedding`을 검증합니다. NSE MQ의 3중 배열 응답 형식은 사용하지 않습니다. GPT 요청에는 기존 OpenAI 키를 사용합니다.
+
+배포 안내의 `max_model_len=8192`는 **토큰 수**입니다. 현재 8,000 UTF-8 바이트 단위 분할을 유지하며 8,192글자로 늘리지 않습니다. 모델 토크나이저의 정확한 토큰 계산과 같지는 않습니다. 긴 조문의 모든 구간을 임베딩한 뒤 통합하며 입력 길이 오류가 계속되면 바이트 한도를 낮추고 재색인합니다.
+
+포트 전달 창을 켠 상태에서 프로젝트 창으로 돌아와 임베딩만 먼저 확인합니다. 이 명령은 DB를 바꾸거나 GPT/MQ를 호출하지 않습니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m app.check_ai
+if ($LASTEXITCODE -ne 0) { throw "임베딩 연결 확인 실패" }
+```
+
+출력의 `임베딩 연결: vllm`과 `임베딩 연결 성공: …차원`을 확인하세요. OpenAI 또는 MQ로 이미 수집한 데이터가 있다면 다음 명령으로 저장된 조문을 재색인합니다. RAW/HTML은 유지되고 법령 API를 다시 수집하지 않습니다. 같은 `emb-bge-m3-ko` 이름이어도 기존 MQ와 HTTP는 다른 연결 식별자로 취급하므로 재색인이 필요합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m app.reindex_embeddings
+if ($LASTEXITCODE -ne 0) { throw "재색인 실패: 실패 항목을 확인하세요" }
+.\.venv\Scripts\python.exe -m app.serve --lan
+```
+
+기존 수집 데이터가 없다면 재색인 명령을 생략하고 서버를 시작한 뒤 수집합니다. LawRAG 화면 포트 `8001`과 임베딩 포트 `8000`은 별개입니다. 포트 전달이 끊어지면 다시 실행해야 하며, 클러스터가 다른 모델로 바뀐 경우 기존 벡터를 그대로 사용하면 안 됩니다.
+
 ## 설정 파일과 선택 범위
 
 우선순위는 **프로세스 환경변수 > 프로젝트 `local.env` > 프로젝트 `.env`**입니다. 변경 후 서버를 재시작합니다. `local.env`를 만들지 않으면 기존 OpenAI 연결은 그대로 동작합니다. 실제 설정 파일은 Git에서 제외하고 예시 파일만 관리합니다.
