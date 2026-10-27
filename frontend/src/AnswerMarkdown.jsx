@@ -3,13 +3,16 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import remarkCjkFriendly from 'remark-cjk-friendly';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 
 // Only plain-text citations with an actual source become controls. Leave code,
-// existing links and unknown numbers alone; never rewrite the Markdown source.
+// existing links, math and unknown numbers alone; never rewrite the Markdown source.
 function remarkCitations({ evidence, linkedSources }) {
   return tree => {
     function walk(node) {
-      if (!node.children || ['link', 'linkReference', 'code', 'inlineCode', 'html'].includes(node.type)) return;
+      if (!node.children || ['link', 'linkReference', 'code', 'inlineCode', 'html', 'math', 'inlineMath'].includes(node.type)) return;
       node.children = node.children.flatMap(child => {
         if (child.type !== 'text') { walk(child); return [child]; }
         const parts = [];
@@ -65,7 +68,8 @@ export default function AnswerMarkdown({ content, evidence = [], linkedSources =
   return <CitationContext.Provider value={{ evidence, linkedSources, onCitationClick }}>
     <div className="answer-text markdown-body">
       <Markdown skipHtml disallowedElements={['img']} components={components}
-        remarkPlugins={[remarkGfm, remarkCjkFriendly, remarkBreaks, [remarkCitations, { evidence, linkedSources }]]}
+        remarkPlugins={[remarkGfm, remarkCjkFriendly, remarkMath, remarkBreaks, [remarkCitations, { evidence, linkedSources }]]}
+        rehypePlugins={[[rehypeKatex, { trust: false }]]}
       >{content}</Markdown>
     </div>
   </CitationContext.Provider>;

@@ -17,6 +17,26 @@ import httpx
 from playwright.sync_api import sync_playwright, expect
 
 ROOT = Path(__file__).resolve().parent.parent
+MATH_SUFFIX = r'''
+
+화살표 $\rightarrow$, 비교 $a_1 \leq b^2$.
+
+$$
+\frac{a_1}{b^2} \rightarrow [1]
+$$
+
+| 기호 | 뜻 |
+| --- | --- |
+| $\rightarrow$ | 오른쪽 화살표 |
+
+코드 `$\rightarrow$`.
+
+```text
+$\rightarrow$
+```
+
+지원하지 않는 수식 $\unknowncommand{x}$ 뒤에도 답변은 유지됩니다.
+'''
 with socket.socket() as listener:
     listener.bind(('127.0.0.1', 0))
     port = listener.getsockname()[1]
@@ -69,17 +89,25 @@ with tempfile.TemporaryDirectory(prefix='lawrag-nse-ui-') as temp:
                 expect(page.get_by_label('생성 중인 답변')).to_have_text('검사를')
                 page.evaluate("window.pushAnswer({type:'answer_text', text:'검사를 신청하세요. [1]'})")
                 expect(page.get_by_label('생성 중인 답변')).to_have_text('검사를 신청하세요. [1]')
+                # Incomplete streamed math must not break the answer. Once the
+                # closing delimiter arrives, use the same renderer as history.
+                page.evaluate("text => window.pushAnswer({type:'answer_text', text})",
+                              r'검사를 신청하세요. [1] $\right')
+                expect(page.get_by_label('생성 중인 답변')).to_contain_text(r'\right')
+                page.evaluate("text => window.pushAnswer({type:'answer_text', text})",
+                              r'검사를 신청하세요. [1] $\rightarrow$')
+                expect(page.locator('.streaming-answer .katex-html')).to_have_text('→')
                 history = page.evaluate("JSON.parse(localStorage.getItem('lawrag.chats'))")
                 assert all(m['role'] != 'assistant' for m in history[0]['messages'])
-                page.evaluate("""() => {
-                    window.pushAnswer({type:'result', result:{answer:'검사를 신청하세요. [1] 참조 [C5]. 미확보 [C99]. 코드 `[C5]`.', as_of:'2026-10-23',
+                page.evaluate("""math => {
+                    window.pushAnswer({type:'result', result:{answer:'검사를 신청하세요. [1] 참조 [C5]. 미확보 [C99]. 코드 `[C5]`.' + math, as_of:'2026-10-23',
                       review_trace:{policy:'rejection_recheck_v1',question:'선박 검사 신청 방법',
                         decisions:[{number:'제1조',phase:'recheck',relevant:true,reason:'신청 방법을 규정함'}]},
                       linked_sources:{C5:{law_name:'시험법',number:'별표 1',title:'검사 기준',
                         html_url:'/documents/linked-test.html#annex-1',relation:'references_annex'}},
                       evidence:[{law_name:'시험법',number:'제1조',title:'검사',score:.8,body:'검사를 신청한다.'}]}});
                     window.endAnswer();
-                }""")
+                }""", MATH_SUFFIX)
                 expect(page.get_by_label('생성 중인 답변')).to_have_count(0)
                 expect(page.get_by_role('button', name='시험법 근거 1개 보기')).to_be_visible()
                 history = page.evaluate("JSON.parse(localStorage.getItem('lawrag.chats'))")
@@ -94,14 +122,28 @@ with tempfile.TemporaryDirectory(prefix='lawrag-nse-ui-') as temp:
                 annex = page.get_by_role('button',name='참조 자료: 시험법 별표 1(검사 기준) 보기')
                 expect(annex).to_have_text('별표 1')
                 expect(page.locator('.message.assistant .citation-link')).to_have_count(2)
-                expect(page.locator('.message.assistant code')).to_have_text('[C5]')
+                expect(page.locator('.message.assistant code').first).to_have_text('[C5]')
                 expect(page.locator('.message.assistant')).to_contain_text('[C99]')
+                expect(page.locator('.message.assistant .katex-html').first).to_have_text('→')
+                expect(page.locator('.message.assistant .katex-display')).to_have_count(1)
+                expect(page.locator('.message.assistant .katex-display .mfrac')).to_have_count(1)
+                expect(page.locator('.message.assistant table .katex-html')).to_have_text('→')
+                expect(page.locator('.message.assistant pre code')).to_have_text('$\\rightarrow$\n')
+                expect(page.locator('.message.assistant .katex-html').last).to_contain_text(r'\unknowncommand')
+                expect(page.locator('.message.assistant')).to_contain_text('뒤에도 답변은 유지됩니다.')
+                page.evaluate('document.fonts.ready')
+                assert page.evaluate("document.fonts.check('16px KaTeX_Main')")
                 annex.click()
                 expect(page.locator('#source-dialog iframe')).to_have_attribute('src','/documents/linked-test.html#annex-1')
                 page.keyboard.press('Escape')
                 page.reload()
                 page.locator('.history-title').first.click()
                 expect(page.get_by_role('button',name='참조 자료: 시험법 별표 1(검사 기준) 보기')).to_be_visible()
+                expect(page.locator('.message.assistant .katex-html').first).to_have_text('→')
+                expect(page.locator('.message.assistant .citation-link')).to_have_count(2)
+                page.set_viewport_size({'width':390,'height':844})
+                assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+                page.set_viewport_size({'width':1280,'height':720})
                 with page.expect_download() as download_info:
                     page.get_by_role('button',name='근거 검토 기록 다운로드').click()
                 download = download_info.value
@@ -134,7 +176,7 @@ with tempfile.TemporaryDirectory(prefix='lawrag-nse-ui-') as temp:
                 expect(page.get_by_text('GPT 완료 응답', exact=True)).to_be_visible()
                 assert not errors, errors
                 browser.close()
-                print('NSE/GPT model selection, cumulative display, final sources, and failure history: PASS')
+                print('NSE/GPT stream, math rendering, citations, persisted sources, and failure history: PASS')
         finally:
             process.terminate()
             process.wait(timeout=10)

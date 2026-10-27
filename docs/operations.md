@@ -160,6 +160,10 @@ cd ..
 
 `retrieval_rank`는 후보 보호 전 RRF 순위이며 `body_focus_score`, `matched_focus_nouns`는 원질의의 본문 핵심어 일치입니다. `admission_score`와 `noun_admission_score`는 임계치 통과 경로를 보여 줍니다. `stage=below_relevance_threshold`는 1차 조건을 통과했지만 RRF 관련도 85% 미만으로 제외된 경우입니다. `relevance_threshold=0.85`와 `relevance_threshold_basis=rrf_score`를 상태 API·채팅 검토 기록·진단 보고서에 기록합니다. `stage`는 검색 단계, `chat_stage`는 실제 LLM 검토 후 상태입니다. `llm_rejected`는 관련성 검토 탈락, `visible_source`는 최종 출처 포함입니다. 진단 보고서에는 키·벡터·조문 전체 본문을 저장하지 않습니다. `--as-of 2026-10-22`로 과거 요청의 기준일을 재현할 수 있습니다.
 
+### 답변의 수식 표시
+
+답변 화면은 `react-markdown`에 `remark-math`와 `rehype-katex`를 연결하여 LaTeX 수식을 표시합니다. ` $\rightarrow$ `는 화살표, ` $a_1^2$ `는 첨자 수식으로 표시됩니다. 독립된 수식은 `$$`를 앞뒤 줄에 두어 작성합니다. 수식 CSS·글꼴도 빌드에 포함하므로 외부 CDN 연결은 필요 없습니다. 스트리밍 중인 답변과 저장된 대화에 같은 렌더러를 적용하며, 일반 코드 블록·백틱 안의 표기는 변환하지 않습니다. HTML 입력은 계속 제외하고 KaTeX의 신뢰 기능은 비활성화합니다. 지원하지 않는 명령은 원래 수식 표기로 남아 답변 전체가 중단되지 않습니다.
+
 ### 자동 검증
 
 ```powershell

@@ -86,6 +86,8 @@ body{display:block}#root{display:grid;grid-template-columns:84px minmax(0,1fr);h
 .markdown-body th{background:#e8f2f9;font-weight:600}.markdown-body tr:last-child td{border-bottom:0}
 .markdown-body .citation-link{display:inline-flex;align-items:center;padding:1px 5px;margin:0 2px;border:1px solid #cbddeb;border-radius:5px;background:#ffffffa6;color:#326aa0;font-size:.75em;line-height:1.4;vertical-align:1px;white-space:nowrap}
 .markdown-body .citation-link:hover{background:#e1eefc;border-color:#729acf;color:#1c5691}
+.markdown-body .katex{font-size:1.1em}
+.markdown-body .katex-display{max-width:100%;overflow-x:auto;overflow-y:hidden;padding:.25em 0}
 @media(max-width:1250px){.chat-page,.chat-page.has-sources{--chat-history-width:240px;grid-template-columns:var(--chat-history-width) minmax(0,1fr)}.chat-page .sources{position:absolute;right:0;top:0;bottom:0;width:min(320px,90%);z-index:5;box-shadow:-8px 0 24px #16374b20}}
 @media(max-width:850px){.chat-page,.chat-page.has-sources{grid-template-columns:minmax(0,1fr)}.chat-page .sidebar{display:none}.model-picker small{flex-basis:100%}}
 

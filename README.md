@@ -76,7 +76,7 @@ LawRAG/
 | 공통 화면·출처 팝업 | [main.jsx](frontend/src/main.jsx), [style.css](frontend/src/style.css) | 법령관리/채팅 전환, 법령 HTML 열기 |
 | 법령관리 | [LawManagement.jsx](frontend/src/LawManagement.jsx), [CollectionDialog.jsx](frontend/src/CollectionDialog.jsx) | 카테고리, 이름·버전 조회, 상하위법 확인, 수집 상태 |
 | 채팅 | [Chat.jsx](frontend/src/Chat.jsx) | 질문·모델 선택, 현재 처리 단계, 출처, 브라우저 대화 이력 |
-| 답변 표시 | [AnswerMarkdown.jsx](frontend/src/AnswerMarkdown.jsx) | Markdown, 표·목록, 숫자 인용과 지식출처 연결 |
+| 답변 표시 | [AnswerMarkdown.jsx](frontend/src/AnswerMarkdown.jsx) | Markdown, 표·목록, LaTeX 수식(remark-math·KaTeX), 숫자 인용과 지식출처 연결 |
 
 주요 경로는 `/api/management/*`(수집 관리), `POST /api/search`(검색), `POST /api/chat` 및 `/api/chat/stream`(검토·답변), `/documents/{파일명}`(출처)입니다. 실행 중인 서버의 `/openapi.json`에서 요청·응답 스키마를 확인할 수 있습니다.
 
