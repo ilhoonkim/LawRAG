@@ -124,6 +124,8 @@ notepad local.env
 
 채팅만 변경하면 재임베딩이 필요 없습니다. **임베딩 서버·모델을 변경하면 기존 벡터와 혼합할 수 없으므로 재색인하거나 별도 `DATA_DIR`를 사용**합니다. 서버 선택은 서버 설정 단위이며, 채팅창의 모델 선택은 현재 선택된 채팅 서버 안에서만 이루어집니다. [설정 예시·API 요청/응답 형식·재색인 절차](docs/company_ai.md)를 참고하세요.
 
+다른 채팅이나 프로젝트에 회사 sLLM 호출 부분만 전달하려면 [독립 Python 호출 코드 MD](docs/company_llm_python.md)를 사용하세요. 설정 파일, 일반 응답·SSE 스트리밍, 토큰 한도 확인, 실행 예제를 담고 있습니다.
+
 **bge-m3-ko를 MQ 없이 직접 호출**하려면 [local.env.vllm.example](local.env.vllm.example)을 `local.env`로 복사합니다. `EMBEDDING_BACKEND=vllm`, `COMPANY_EMBEDDING_BASE_URL=http://127.0.0.1:8000/v1`, `COMPANY_EMBEDDING_MODEL=emb-bge-m3-ko`를 사용합니다. LawRAG 서버와 같은 PC에서 `kubectl --context=kdev-context -n davinci-ragllm port-forward svc/emb-bge-m3-ko-vllm-predictor 8000:80`을 실행해 두고 `python -m app.check_ai`로 임베딩만 확인합니다. [백업·포트 전달·재색인 실행 순서](docs/company_ai.md#bge-m3-ko-vllm-직접-연결)를 참고하세요. 채팅은 기존 GPT 설정을 유지합니다.
 
 회사 vLLM 채팅은 `COMPANY_CHAT_MAX_TOKENS=auto`로 서버 문맥 한도와 실제 입력 토큰 수를 조회해 남은 길이를 출력 상한으로 사용합니다. 웹의 최종 답변은 `stream=true`의 SSE 청크를 받아 바로 표시하고, 내부 검토 JSON은 완성 후 검증합니다. `python -m app.check_ai --stream`으로 JSON 응답·토큰 예산·실제 스트리밍을 확인할 수 있습니다. [문맥 한도와 스트리밍 설정](docs/company_ai.md#vllm-채팅-실제-문맥-한도와-스트리밍)을 참고하세요.

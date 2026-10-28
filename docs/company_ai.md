@@ -4,6 +4,8 @@
 
 ## 회사 LLM 호출 코드 재사용
 
+LawRAG 밖에서 실행할 수 있는 Python 코드와 설정만 다른 채팅에 전달하려면 [회사 sLLM Python 호출 코드 — 전달용](company_llm_python.md)을 사용하세요. 일반 응답·SSE 스트리밍·토큰 예산 확인을 포함한 독립 실행 예제입니다.
+
 현재 `CHAT_BACKEND=company`는 MQ를 거치지 않고 `COMPANY_CHAT_BASE_URL`의 `/chat/completions`에 HTTP로 요청합니다. `BASE_URL`에 `/v1`이 포함되므로 실제 경로는 `/v1/chat/completions`입니다. 모델은 `COMPANY_CHAT_MODEL`을 사용하며 `physical_model_id`는 보내지 않습니다.
 
 | 코드 | 역할 |
@@ -11,7 +13,7 @@
 | [config.py](../app/config.py)의 `Settings.endpoint('chat')` | 회사/OpenAI 서버 주소·모델·인증 선택 |
 | [provider.py](../app/provider.py)의 `Provider.post()` | 일반 요청 전송, JSON 응답 반환, 오류·재시도 처리 |
 | 같은 파일의 `Provider.stream_completion()` | `stream: true` 전송, SSE 응답 수신 |
-| [chat_stream.py](../app/chat_stream.py)의 `stream_answer()` | SSE의 `choices[0].delta.content`를 콜백으로 전달하고 전체 답변 조립 |
+| [chat_stream.py](../app/chat_stream.py)의 `stream_answer()` | SSE의 `choices[0].delta.content`를 합쳐 누적 답변을 콜백으로 전달 |
 | [vllm_context.py](../app/vllm_context.py) | 회사 vLLM의 입력 토큰·출력 여유 확인 |
 | [chat_pipeline.py](../app/chat_pipeline.py)의 `run_chat()` | 검색·검토·참조 확장·입력 예산 조정 후 답변 호출 |
 
@@ -27,10 +29,14 @@ messages = [
     {"role": "user", "content": "벡터 검색을 한 문장으로 설명해 주세요."},
 ]
 
-# 새 텍스트 조각이 도착할 때마다 실행됩니다. 반환값은 전체 답변입니다.
-answer = provider.stream_completion(
-    messages, lambda chunk: print(chunk, end="", flush=True)
-)
+# 원본 Provider의 콜백은 누적 답변입니다. 터미널에는 새로 늘어난 부분만 씁니다.
+printed_length = 0
+def print_new_text(full_text):
+    global printed_length
+    print(full_text[printed_length:], end="", flush=True)
+    printed_length = len(full_text)
+
+answer = provider.stream_completion(messages, print_new_text)
 print()
 
 # 스트리밍 없이 JSON 응답을 받으려면 위 호출 대신 아래를 사용합니다.
@@ -40,7 +46,7 @@ print()
 # answer = data["choices"][0]["message"]["content"]
 ```
 
-`Provider`는 다른 앱 모듈에 의존하므로 파일 하나만 복사하는 독립 SDK는 아닙니다. 별도 프로젝트에서 HTTP 직접 호출을 구현하려면 `stream_completion()`의 요청 형식과 `chat_stream.py`의 SSE 처리를 참고하세요. 각 콜백은 한 글자가 아니라 서버가 보낸 텍스트 조각입니다. `COMPANY_CHAT_MAX_TOKENS=auto`는 vLLM의 `/v1/models`·`/tokenize` 지원이 필요합니다. 직접 `Provider`를 호출하면 초과 입력을 자동으로 줄이지 않고 `ContextBudgetExceeded`를 발생시키며, LawRAG의 후보 축소는 `run_chat()`이 담당합니다.
+`Provider`는 다른 앱 모듈에 의존하므로 파일 하나만 복사하는 독립 SDK는 아닙니다. 별도 프로젝트에서 HTTP 직접 호출을 구현하려면 전달용 독립 예제 또는 `stream_completion()`의 요청 형식과 `chat_stream.py`의 SSE 처리를 참고하세요. 원본 Provider의 각 콜백은 현재까지의 누적 답변이므로 웹 화면에서는 기존 답변을 교체합니다. `COMPANY_CHAT_MAX_TOKENS=auto`는 vLLM의 `/v1/models`·`/tokenize` 지원이 필요합니다. 직접 `Provider`를 호출하면 초과 입력을 자동으로 줄이지 않고 `ContextBudgetExceeded`를 발생시키며, LawRAG의 후보 축소는 `run_chat()`이 담당합니다.
 
 ## bge-m3-ko vLLM 직접 연결
 
